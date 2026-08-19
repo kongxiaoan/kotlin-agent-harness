@@ -5,6 +5,16 @@ model:
   base-url: https://api.deepseek.com
   connect-timeout-seconds: 10
   request-timeout-seconds: 60
+# SSE 已连接但长时间没有任何数据时中止本次模型调用
+  stream-idle-timeout-seconds: 30
+# 价格是请求发生时写入 Session 的快照；调价时必须修改 version 和费率
+  pricing:
+    version: deepseek-v4-flash-2026-08-19-cny
+    currency: CNY
+    input-per-million: "1.00"
+    cache-read-per-million: "0.02"
+    cache-write-per-million: "0"
+    output-per-million: "2.00"
   retry:
     max-retries: 2
     initial-delay-ms: 500

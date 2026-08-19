@@ -3,7 +3,9 @@ package com.attuchengmen.agent.session
 import com.attuchengmen.agent.model.ToolCall
 import com.attuchengmen.agent.model.ToolDefinition
 import com.attuchengmen.agent.model.ModelChunk
+import com.attuchengmen.agent.model.ModelProfile
 import java.time.Duration
+import java.time.Instant
 
 /**
  * 阅读顺序 2：Session 中按发生顺序记录的运行事实。
@@ -43,13 +45,15 @@ data class ToolResultAdded(
 /**
  * 一次模型请求即将发送，并保存消息日志之外的模型可见工具定义。
  *
- * 该事件之前的消息事实与 [tools] 共同构成实际请求。
+ * 该事件之前的消息事实与 [tools] 共同构成实际请求；[profile] 保存
+ * Provider、模型和当次价格，保证历史 Usage 可审计。
  */
 data class ModelRequestPrepared(
     val turn: Int,
     val step: Int,
     val tools: List<ToolDefinition>,
     val attempt: Int = 1,
+    val profile: ModelProfile? = null,
 ) : SessionEvent
 
 /** 一次可重试模型失败已经按 Provider 策略安排下一次请求。 */
@@ -61,12 +65,13 @@ data class ModelRetryScheduled(
     val failure: String,
 ) : SessionEvent
 
-/** Provider 为一个模型请求 attempt 产生的原始流事件。 */
+/** Provider 为一个模型请求 attempt 产生的原始流事件；Usage 同时记录 UTC 观测时间。 */
 data class ModelChunkReceived(
     val turn: Int,
     val step: Int,
     val attempt: Int,
     val chunk: ModelChunk,
+    val observedAt: Instant? = null,
 ) : SessionEvent
 
 /**
@@ -98,6 +103,9 @@ data class StepEnded(
 sealed interface TurnOutcome {
     /** Turn 已正常产生模型回复。 */
     data object Completed : TurnOutcome
+
+    /** 模型达到输出上限；返回内容可能是不完整的。 */
+    data object MaxTokens : TurnOutcome
 
     /** Turn 因调用方取消而结束；取消不是业务失败。 */
     data object Cancelled : TurnOutcome

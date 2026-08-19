@@ -27,6 +27,7 @@ class DeepSeekLiveTest {
                 baseUri = baseUri,
                 connectTimeout = Duration.ofSeconds(10),
                 requestTimeout = Duration.ofSeconds(60),
+                streamIdleTimeout = Duration.ofSeconds(30),
                 retryPolicy = ModelRetryPolicy(2, Duration.ofMillis(500), Duration.ofSeconds(4)),
             ),
         )

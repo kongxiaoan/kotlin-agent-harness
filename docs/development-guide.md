@@ -25,9 +25,9 @@ Agent.submit(content)
 
 `AgentOptions.turnTimeout` 限制一个 Turn 内所有模型与工具调用的总时间。超时会先取消并等待当前 Step 清理，再记录 `TimedOut` 并抛出 `TurnTimeoutExceededException`；它与外部调用方取消是两个不同事实。
 
-模型重试遵循 Harness 的请求恢复语义：重试仍发生在原 Turn 和原 Step 内。策略由模型 Provider 通过 `LanguageModel.retryPolicy` 提供；Runtime 只处理 `ModelRequestException(retryable = true)`，达到上限后传播最后一次失败。每次请求都有递增 `attempt` 的 `ModelRequestPrepared`，等待计划记录为 `ModelRetryScheduled`，因此恢复和观测不依赖内存计数。工具异常、协议错误、鉴权错误和普通 4xx 不会被重试。
+模型重试遵循 Harness 的请求恢复语义：重试仍发生在原 Turn 和原 Step 内。策略由模型 Provider 通过 `LanguageModel.retryPolicy` 提供；Runtime 只处理 `ModelRequestException(retryable = true)`，达到上限后传播最后一次失败。每次请求都有递增 `attempt` 的 `ModelRequestPrepared`，等待计划记录为 `ModelRetryScheduled`，因此恢复和观测不依赖内存计数。失败 attempt 已产生的 chunk 仍作为运行事实保留，但不进入消息投影；终端将其换行并显示重试标记，避免与成功 attempt 拼接。工具异常、协议错误、鉴权错误和普通 4xx 不会被重试。
 
-模型调用统一经过 `LanguageModel.stream`。每个原始 `ModelChunk` 先记录为不进入消息投影的 `ModelChunkReceived`，再交给 `ModelChunkAssembler` 验证并生成唯一的最终 `ModelResponse`；只有最终响应会产生 `AssistantMessageAdded` 或 `ToolCallRequested`。非流式 Provider 使用默认实现把 `generate` 结果包装成一个 `Finished` chunk。DeepSeek Adapter 按 wire `index` 累积工具 id、名称和原始 JSON 参数；当前领域模型只允许一个工具调用，因此第二个 index 明确失败。
+模型调用统一经过 `LanguageModel.stream`。每个原始 `ModelChunk` 先记录为不进入消息投影的 `ModelChunkReceived`，再交给 `ModelChunkAssembler` 验证并生成唯一的最终 `ModelResponse`；只有最终响应会产生 `AssistantMessageAdded` 或 `ToolCallRequested`。`Usage` chunk 同时保存 UTC 观测时间，`Finished` 保存停止原因；`MAX_TOKENS` 使用独立 Turn 终态。非流式 Provider 使用默认实现把 `generate` 结果包装成一个 `Finished` chunk。DeepSeek Adapter 按 wire `index` 累积工具 id、名称和原始 JSON 参数；当前领域模型只允许一个工具调用，因此第二个 index 明确失败。Token 字段、价格快照和商业聚合规则见 [Token Usage 文档](token-usage.md)。
 
 ## 代码阅读顺序
 
@@ -40,10 +40,12 @@ Agent.submit(content)
 7. `session/SessionRecovery.kt`：崩溃尾部如何补齐工具、Step 和 Turn。
 8. `session/SessionProjector.kt`：事实如何转换成模型上下文。
 9. `model/LanguageModel.kt`：核心代码依赖的模型端口。
-10. `tool/`：工具定义、注册表和受工作区限制的文件读取实现。
-11. `Agent.kt`：驱动 Turn、Step、模型和工具。
-12. Session 测试：验证格式往返、恢复和损坏文件失败。
-13. 其余测试：验证投影、内存日志和 Agent 编排行为。
+10. `model/ModelAccounting.kt`：Token、停止原因和价格快照。
+11. `session/SessionUsageReporter.kt`：从事实日志计算商业用量。
+12. `tool/`：工具定义、注册表和受工作区限制的文件读取实现。
+13. `Agent.kt`：驱动 Turn、Step、模型和工具。
+14. Session 测试：验证格式往返、恢复和损坏文件失败。
+15. 其余测试：验证投影、内存日志和 Agent 编排行为。
 
 阅读时对每个模块回答：它拥有什么状态、谁能修改状态、输入输出是什么、失败如何传播、它依赖哪些模块。
 
@@ -68,7 +70,7 @@ Message List     = 可重新计算的投影
 
 Agent Runtime 只需要“完整请求产生一个结果”的能力，不应该依赖具体供应商。`ModelRequest` 同时携带消息历史和工具定义；测试可以使用 Fake Model，未来的 HTTP Provider 也实现同一个端口。当前只有一个真实需求，因此没有 Factory、Provider Registry 或依赖注入框架。
 
-`DeepSeekAdapter` 是当前第一个真实实现。它独立拥有 URL、Bearer 鉴权、模型名、超时、DeepSeek JSON DTO、SSE 解析和 HTTP/协议异常；这些内容不会进入 `Agent`。当前显式关闭 thinking，因为 Session 尚未保存 reasoning content；SSE 必须以 `[DONE]` 结束，文本和工具参数均可分片，多工具响应会明确失败。
+`DeepSeekAdapter` 是当前第一个真实实现。它独立拥有 URL、Bearer 鉴权、模型名、超时、DeepSeek JSON DTO、SSE 解析和 HTTP/协议异常；这些内容不会进入 `Agent`。当前显式关闭 thinking，因为 Session 尚未保存 reasoning content；SSE 必须以 `[DONE]` 结束，文本和工具参数均可分片，多工具响应会明确失败。`stream-idle-timeout-seconds` 限制相邻两次网络读取的最长间隔，任何数据（包括 SSE 心跳注释）都会重置计时；该超时关闭响应流并作为可重试模型错误上报，而调用方取消保持为协程取消。
 
 ### 工具定义
 

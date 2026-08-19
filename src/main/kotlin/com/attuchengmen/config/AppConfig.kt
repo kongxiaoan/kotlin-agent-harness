@@ -1,8 +1,10 @@
 package com.attuchengmen.config
 
+import com.attuchengmen.agent.model.ModelPricing
 import com.attuchengmen.agent.model.ModelRetryPolicy
 import org.snakeyaml.engine.v2.api.Load
 import org.snakeyaml.engine.v2.api.LoadSettings
+import java.math.BigDecimal
 import java.net.URI
 import java.nio.file.Files
 import java.nio.file.Path
@@ -23,7 +25,7 @@ data class AgentConfig(
     val turnTimeout: Duration,
 )
 
-/** 模型 Adapter 的部署配置；[apiKeyEnv] 是环境变量名而不是密钥。 */
+/** 模型 Adapter 的部署配置；[apiKeyEnv] 是环境变量名，[pricing] 是请求时价格快照。 */
 data class ModelConfig(
     val provider: String,
     val apiKeyEnv: String,
@@ -31,6 +33,8 @@ data class ModelConfig(
     val baseUri: URI,
     val connectTimeout: Duration,
     val requestTimeout: Duration,
+    val streamIdleTimeout: Duration,
+    val pricing: ModelPricing,
     val retryPolicy: ModelRetryPolicy,
 )
 
@@ -66,7 +70,18 @@ object AppConfigLoader {
             "base-url",
             "connect-timeout-seconds",
             "request-timeout-seconds",
+            "stream-idle-timeout-seconds",
+            "pricing",
             "retry",
+        )
+        val pricing = model.child("pricing")
+        pricing.requireOnly(
+            "version",
+            "currency",
+            "input-per-million",
+            "cache-read-per-million",
+            "cache-write-per-million",
+            "output-per-million",
         )
         val retry = model.child("retry")
         retry.requireOnly("max-retries", "initial-delay-ms", "max-delay-ms")
@@ -87,6 +102,8 @@ object AppConfigLoader {
                 baseUri = model.uri("base-url"),
                 connectTimeout = Duration.ofSeconds(model.positiveLong("connect-timeout-seconds")),
                 requestTimeout = Duration.ofSeconds(model.positiveLong("request-timeout-seconds")),
+                streamIdleTimeout = Duration.ofSeconds(model.positiveLong("stream-idle-timeout-seconds")),
+                pricing = pricing.modelPricing(),
                 retryPolicy = ModelRetryPolicy(
                     maxRetries = retry.nonNegativeInt("max-retries"),
                     initialDelay = Duration.ofMillis(retry.positiveLong("initial-delay-ms")),
@@ -157,6 +174,31 @@ private class ConfigNode(
         URI(string(key))
     } catch (error: IllegalArgumentException) {
         throw AppConfigException("$location.$key must be a valid URI", error)
+    }
+
+    fun modelPricing(): ModelPricing = try {
+        ModelPricing(
+            version = string("version"),
+            currency = string("currency"),
+            inputPerMillion = decimal("input-per-million"),
+            cacheReadPerMillion = decimal("cache-read-per-million"),
+            cacheWritePerMillion = decimal("cache-write-per-million"),
+            outputPerMillion = decimal("output-per-million"),
+        )
+    } catch (error: AppConfigException) {
+        throw error
+    } catch (error: IllegalArgumentException) {
+        throw AppConfigException("$location is invalid: ${error.message}", error)
+    }
+
+    private fun decimal(key: String): BigDecimal {
+        val value = try {
+            BigDecimal(string(key))
+        } catch (error: NumberFormatException) {
+            throw AppConfigException("$location.$key must be a decimal string", error)
+        }
+        if (value < BigDecimal.ZERO) throw AppConfigException("$location.$key must not be negative")
+        return value
     }
 
     private fun required(key: String): Any? =

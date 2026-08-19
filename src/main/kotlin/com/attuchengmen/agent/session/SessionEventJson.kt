@@ -2,7 +2,11 @@ package com.attuchengmen.agent.session
 
 import com.attuchengmen.agent.message.AssistantMessage
 import com.attuchengmen.agent.model.ModelChunk
+import com.attuchengmen.agent.model.ModelFinishReason
+import com.attuchengmen.agent.model.ModelPricing
+import com.attuchengmen.agent.model.ModelProfile
 import com.attuchengmen.agent.model.ModelResponse
+import com.attuchengmen.agent.model.TokenUsage
 import com.attuchengmen.agent.model.ToolCall
 import com.attuchengmen.agent.model.ToolDefinition
 import kotlinx.serialization.SerialName
@@ -11,7 +15,9 @@ import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import java.math.BigDecimal
 import java.time.Duration
+import java.time.Instant
 
 /** JSON 文件边界使用的 SessionEvent 编解码器。 */
 internal object SessionEventJson {
@@ -65,7 +71,25 @@ private data class StoredModelRequestPrepared(
     val step: Int,
     val tools: List<StoredToolDefinition>,
     val attempt: Int = 1,
+    val profile: StoredModelProfile? = null,
 ) : StoredSessionEvent
+
+@Serializable
+private data class StoredModelProfile(
+    val provider: String,
+    val model: String,
+    val pricing: StoredModelPricing? = null,
+)
+
+@Serializable
+private data class StoredModelPricing(
+    val version: String,
+    val currency: String,
+    val inputPerMillion: String,
+    val cacheReadPerMillion: String,
+    val cacheWritePerMillion: String,
+    val outputPerMillion: String,
+)
 
 @Serializable
 @SerialName("model-retry-scheduled")
@@ -84,6 +108,7 @@ private data class StoredModelChunkReceived(
     val step: Int,
     val attempt: Int,
     val chunk: StoredModelChunk,
+    val observedAt: String? = null,
 ) : StoredSessionEvent
 
 @Serializable
@@ -104,7 +129,32 @@ private data class StoredToolCallDelta(
 
 @Serializable
 @SerialName("finished")
-private data class StoredFinished(val response: StoredModelResponse) : StoredModelChunk
+private data class StoredFinished(
+    val response: StoredModelResponse,
+    val reason: StoredModelFinishReason? = null,
+) : StoredModelChunk
+
+@Serializable
+@SerialName("usage")
+private data class StoredUsage(
+    val inputTokens: Long,
+    val outputTokens: Long,
+    val cacheReadTokens: Long? = null,
+    val cacheWriteTokens: Long? = null,
+    val reasoningTokens: Long? = null,
+) : StoredModelChunk
+
+@Serializable
+private enum class StoredModelFinishReason {
+    @SerialName("stop")
+    STOP,
+
+    @SerialName("tool-calls")
+    TOOL_CALLS,
+
+    @SerialName("max-tokens")
+    MAX_TOKENS,
+}
 
 @Serializable
 private sealed interface StoredModelResponse
@@ -161,6 +211,10 @@ private sealed interface StoredTurnOutcome
 private data object StoredCompleted : StoredTurnOutcome
 
 @Serializable
+@SerialName("max-tokens")
+private data object StoredMaxTokens : StoredTurnOutcome
+
+@Serializable
 @SerialName("cancelled")
 private data object StoredCancelled : StoredTurnOutcome
 
@@ -191,9 +245,10 @@ private fun SessionEvent.toStored(): StoredSessionEvent = when (this) {
         step = step,
         tools = tools.map { StoredToolDefinition(it.name, it.description, it.parameters) },
         attempt = attempt,
+        profile = profile?.toStored(),
     )
     is ModelRetryScheduled -> StoredModelRetryScheduled(turn, step, retry, delayMillis, failure)
-    is ModelChunkReceived -> StoredModelChunkReceived(turn, step, attempt, chunk.toStored())
+    is ModelChunkReceived -> StoredModelChunkReceived(turn, step, attempt, chunk.toStored(), observedAt?.toString())
     is TurnStarted -> StoredTurnStarted(turn)
     is StepStarted -> StoredStepStarted(turn, step)
     is StepEnded -> StoredStepEnded(turn, step)
@@ -201,6 +256,7 @@ private fun SessionEvent.toStored(): StoredSessionEvent = when (this) {
         turn = turn,
         outcome = when (val value = outcome) {
             TurnOutcome.Completed -> StoredCompleted
+            TurnOutcome.MaxTokens -> StoredMaxTokens
             TurnOutcome.Cancelled -> StoredCancelled
             TurnOutcome.Interrupted -> StoredInterrupted
             is TurnOutcome.TimedOut -> StoredTimedOut(value.timeout.toMillis())
@@ -224,9 +280,16 @@ private fun StoredSessionEvent.toDomain(): SessionEvent = when (this) {
         step = step,
         tools = tools.map { ToolDefinition(it.name, it.description, it.parameters) },
         attempt = attempt,
+        profile = profile?.toDomain(),
     )
     is StoredModelRetryScheduled -> ModelRetryScheduled(turn, step, retry, delayMillis, failure)
-    is StoredModelChunkReceived -> ModelChunkReceived(turn, step, attempt, chunk.toDomain())
+    is StoredModelChunkReceived -> ModelChunkReceived(
+        turn = turn,
+        step = step,
+        attempt = attempt,
+        chunk = chunk.toDomain(),
+        observedAt = observedAt?.let(Instant::parse),
+    )
     is StoredTurnStarted -> TurnStarted(turn)
     is StoredStepStarted -> StepStarted(turn, step)
     is StoredStepEnded -> StepEnded(turn, step)
@@ -234,6 +297,7 @@ private fun StoredSessionEvent.toDomain(): SessionEvent = when (this) {
         turn = turn,
         outcome = when (val value = outcome) {
             StoredCompleted -> TurnOutcome.Completed
+            StoredMaxTokens -> TurnOutcome.MaxTokens
             StoredCancelled -> TurnOutcome.Cancelled
             StoredInterrupted -> TurnOutcome.Interrupted
             is StoredTimedOut -> TurnOutcome.TimedOut(Duration.ofMillis(value.timeoutMillis))
@@ -245,13 +309,69 @@ private fun StoredSessionEvent.toDomain(): SessionEvent = when (this) {
 private fun ModelChunk.toStored(): StoredModelChunk = when (this) {
     is ModelChunk.TextDelta -> StoredTextDelta(text)
     is ModelChunk.ToolCallDelta -> StoredToolCallDelta(index, id, name, argumentsDelta)
-    is ModelChunk.Finished -> StoredFinished(response.toStored())
+    is ModelChunk.Usage -> StoredUsage(
+        inputTokens = usage.inputTokens,
+        outputTokens = usage.outputTokens,
+        cacheReadTokens = usage.cacheReadTokens,
+        cacheWriteTokens = usage.cacheWriteTokens,
+        reasoningTokens = usage.reasoningTokens,
+    )
+    is ModelChunk.Finished -> StoredFinished(response.toStored(), reason.toStored())
 }
 
 private fun StoredModelChunk.toDomain(): ModelChunk = when (this) {
     is StoredTextDelta -> ModelChunk.TextDelta(text)
     is StoredToolCallDelta -> ModelChunk.ToolCallDelta(index, id, name, argumentsDelta)
-    is StoredFinished -> ModelChunk.Finished(response.toDomain())
+    is StoredUsage -> ModelChunk.Usage(
+        TokenUsage(inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, reasoningTokens),
+    )
+    is StoredFinished -> if (reason == null) {
+        ModelChunk.Finished(response.toDomain())
+    } else {
+        ModelChunk.Finished(response.toDomain(), reason.toDomain())
+    }
+}
+
+private fun ModelProfile.toStored(): StoredModelProfile = StoredModelProfile(
+    provider = provider,
+    model = model,
+    pricing = pricing?.let {
+        StoredModelPricing(
+            version = it.version,
+            currency = it.currency,
+            inputPerMillion = it.inputPerMillion.toPlainString(),
+            cacheReadPerMillion = it.cacheReadPerMillion.toPlainString(),
+            cacheWritePerMillion = it.cacheWritePerMillion.toPlainString(),
+            outputPerMillion = it.outputPerMillion.toPlainString(),
+        )
+    },
+)
+
+private fun StoredModelProfile.toDomain(): ModelProfile = ModelProfile(
+    provider = provider,
+    model = model,
+    pricing = pricing?.let {
+        ModelPricing(
+            version = it.version,
+            currency = it.currency,
+            inputPerMillion = BigDecimal(it.inputPerMillion),
+            cacheReadPerMillion = BigDecimal(it.cacheReadPerMillion),
+            cacheWritePerMillion = BigDecimal(it.cacheWritePerMillion),
+            outputPerMillion = BigDecimal(it.outputPerMillion),
+        )
+    },
+)
+
+private fun ModelFinishReason.toStored(): StoredModelFinishReason = when (this) {
+    ModelFinishReason.STOP -> StoredModelFinishReason.STOP
+    ModelFinishReason.TOOL_CALLS -> StoredModelFinishReason.TOOL_CALLS
+    ModelFinishReason.MAX_TOKENS -> StoredModelFinishReason.MAX_TOKENS
+}
+
+private fun StoredModelFinishReason.toDomain(): ModelFinishReason = when (this) {
+    StoredModelFinishReason.STOP -> ModelFinishReason.STOP
+    StoredModelFinishReason.TOOL_CALLS -> ModelFinishReason.TOOL_CALLS
+    StoredModelFinishReason.MAX_TOKENS -> ModelFinishReason.MAX_TOKENS
 }
 
 private fun ModelResponse.toStored(): StoredModelResponse = when (this) {

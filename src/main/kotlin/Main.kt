@@ -1,5 +1,4 @@
-package com.attuchengmen
-
+import com.attuchengmen.TerminalStreamRenderer
 import com.attuchengmen.agent.Agent
 import com.attuchengmen.agent.AgentOptions
 import com.attuchengmen.agent.model.LanguageModel
@@ -62,7 +61,9 @@ private fun createModel(config: AppConfig): LanguageModel = when (config.model.p
                 baseUri = config.model.baseUri,
                 connectTimeout = config.model.connectTimeout,
                 requestTimeout = config.model.requestTimeout,
+                streamIdleTimeout = config.model.streamIdleTimeout,
                 retryPolicy = config.model.retryPolicy,
+                pricing = config.model.pricing,
             ),
         )
     }

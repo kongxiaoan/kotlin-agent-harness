@@ -19,9 +19,15 @@ sealed interface ModelChunk {
         }
     }
 
-    /** 流的唯一终态，携带组装后的完整响应。 */
+    /** Provider 对当前 attempt 报告的完整用量；后到值覆盖先到值。 */
+    data class Usage(
+        val usage: TokenUsage,
+    ) : ModelChunk
+
+    /** 流的唯一终态，携带组装后的完整响应及停止原因。 */
     data class Finished(
         val response: ModelResponse,
+        val reason: ModelFinishReason = defaultFinishReason(response),
     ) : ModelChunk
 }
 
@@ -35,6 +41,10 @@ class ModelChunkAssembler {
     private val text = StringBuilder()
     private var toolCall: PartialToolCall? = null
     private var response: ModelResponse? = null
+    var usage: TokenUsage? = null
+        private set
+    var finishReason: ModelFinishReason? = null
+        private set
 
     /** 接收下一个 chunk；终态之后不允许继续产生内容。 */
     fun push(chunk: ModelChunk) {
@@ -42,10 +52,13 @@ class ModelChunkAssembler {
         when (chunk) {
             is ModelChunk.TextDelta -> text.append(chunk.text)
             is ModelChunk.ToolCallDelta -> pushToolCall(chunk)
+            is ModelChunk.Usage -> usage = chunk.usage
             is ModelChunk.Finished -> {
                 validateText(chunk.response)
                 validateToolCall(chunk.response)
+                validateFinishReason(chunk.response, chunk.reason)
                 response = chunk.response
+                finishReason = chunk.reason
             }
         }
     }
@@ -88,6 +101,14 @@ class ModelChunkAssembler {
         }
     }
 
+    private fun validateFinishReason(value: ModelResponse, reason: ModelFinishReason) {
+        val valid = when (value) {
+            is ModelResponse.Answer -> reason != ModelFinishReason.TOOL_CALLS
+            is ModelResponse.ToolRequest -> reason == ModelFinishReason.TOOL_CALLS
+        }
+        if (!valid) throw ModelStreamProtocolException("finish reason does not match response type")
+    }
+
     private fun mergeField(field: String, previous: String?, next: String): String {
         if (previous != null && previous != next) {
             throw ModelStreamProtocolException("tool call $field changed during stream")
@@ -101,4 +122,9 @@ class ModelChunkAssembler {
         var name: String? = null,
         val arguments: StringBuilder = StringBuilder(),
     )
+}
+
+private fun defaultFinishReason(response: ModelResponse): ModelFinishReason = when (response) {
+    is ModelResponse.Answer -> ModelFinishReason.STOP
+    is ModelResponse.ToolRequest -> ModelFinishReason.TOOL_CALLS
 }

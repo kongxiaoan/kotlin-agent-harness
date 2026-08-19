@@ -2,7 +2,9 @@ package com.attuchengmen.agent
 
 import com.attuchengmen.agent.message.AssistantMessage
 import com.attuchengmen.agent.model.LanguageModel
+import com.attuchengmen.agent.model.ModelChunk
 import com.attuchengmen.agent.model.ModelChunkAssembler
+import com.attuchengmen.agent.model.ModelFinishReason
 import com.attuchengmen.agent.model.ModelRequest
 import com.attuchengmen.agent.model.ModelRequestException
 import com.attuchengmen.agent.model.ModelResponse
@@ -29,6 +31,7 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
+import java.time.Clock
 import java.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 
@@ -70,6 +73,7 @@ class Agent(
     private val model: LanguageModel,
     private val tools: ToolRegistry,
     private val options: AgentOptions,
+    private val clock: Clock = Clock.systemUTC(),
 ) {
     private val turnMutex = Mutex()
 
@@ -88,11 +92,16 @@ class Agent(
         val turn = nextTurnNumber()
         session.append(TurnStarted(turn))
         try {
-            val message = withTimeoutOrNull(options.turnTimeout.toMillis().milliseconds) {
+            val result = withTimeoutOrNull(options.turnTimeout.toMillis().milliseconds) {
                 runSteps(turn, content)
             } ?: throw TurnTimeoutExceededException(options.turnTimeout)
-            session.append(TurnEnded(turn, TurnOutcome.Completed))
-            return message
+            val outcome = if (result.reason == ModelFinishReason.MAX_TOKENS) {
+                TurnOutcome.MaxTokens
+            } else {
+                TurnOutcome.Completed
+            }
+            session.append(TurnEnded(turn, outcome))
+            return result.message
         } catch (error: TurnTimeoutExceededException) {
             session.append(TurnEnded(turn, TurnOutcome.TimedOut(error.timeout)))
             throw error
@@ -107,12 +116,12 @@ class Agent(
     }
 
     /** 持续执行 Step，直到得到答案或触发 Step 上限。 */
-    private suspend fun runSteps(turn: Int, content: String): AssistantMessage {
+    private suspend fun runSteps(turn: Int, content: String): StepResult.Answer {
         var step = 1
         var nextUserContent: String? = content
         while (true) {
             when (val result = runStep(turn, step, nextUserContent)) {
-                is StepResult.Answer -> return result.message
+                is StepResult.Answer -> return result
                 StepResult.Continue -> {
                     if (step >= options.maxStepsPerTurn) {
                         throw StepLimitExceededException(options.maxStepsPerTurn)
@@ -133,10 +142,13 @@ class Agent(
                 messages = SessionProjector.toMessages(session.events),
                 tools = tools.definitions,
             )
-            return when (val response = generateWithRetry(turn, step, request)) {
+            val modelResult = generateWithRetry(turn, step, request)
+            return when (val response = modelResult.response) {
                 is ModelResponse.Answer -> {
-                    session.append(AssistantMessageAdded(response.message.content))
-                    StepResult.Answer(response.message)
+                    if (response.message.content.isNotEmpty()) {
+                        session.append(AssistantMessageAdded(response.message.content))
+                    }
+                    StepResult.Answer(response.message, modelResult.reason)
                 }
 
                 is ModelResponse.ToolRequest -> {
@@ -177,17 +189,39 @@ class Agent(
     }
 
     /** 只重试 Provider 明确标记为瞬时失败的模型请求。 */
-    private suspend fun generateWithRetry(turn: Int, step: Int, request: ModelRequest): ModelResponse {
+    private suspend fun generateWithRetry(turn: Int, step: Int, request: ModelRequest): ModelCallResult {
         var retry = 0
         while (true) {
-            session.append(ModelRequestPrepared(turn, step, request.tools, attempt = retry + 1))
+            session.append(
+                ModelRequestPrepared(
+                    turn = turn,
+                    step = step,
+                    tools = request.tools,
+                    attempt = retry + 1,
+                    profile = model.profile,
+                ),
+            )
             try {
                 val assembler = ModelChunkAssembler()
                 model.stream(request).collect { chunk ->
-                    session.append(ModelChunkReceived(turn, step, retry + 1, chunk))
+                    session.append(
+                        ModelChunkReceived(
+                            turn = turn,
+                            step = step,
+                            attempt = retry + 1,
+                            chunk = chunk,
+                            observedAt = if (chunk is ModelChunk.Usage) {
+                                clock.instant()
+                            } else {
+                                null
+                            },
+                        ),
+                    )
                     assembler.push(chunk)
                 }
-                return assembler.finish()
+                val response = assembler.finish()
+                val reason = checkNotNull(assembler.finishReason) { "finished model stream has no finish reason" }
+                return ModelCallResult(response, reason)
             } catch (error: CancellationException) {
                 throw error
             } catch (error: ModelRequestException) {
@@ -208,7 +242,15 @@ class Agent(
 
 /** 一个 Step 对所属 Turn 的控制结果。 */
 private sealed interface StepResult {
-    data class Answer(val message: AssistantMessage) : StepResult
+    data class Answer(
+        val message: AssistantMessage,
+        val reason: ModelFinishReason,
+    ) : StepResult
 
     data object Continue : StepResult
 }
+
+private data class ModelCallResult(
+    val response: ModelResponse,
+    val reason: ModelFinishReason,
+)

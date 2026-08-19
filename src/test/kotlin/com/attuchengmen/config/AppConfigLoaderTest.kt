@@ -20,6 +20,10 @@ class AppConfigLoaderTest {
             assertEquals("deepseek", config.model.provider)
             assertEquals("DEEPSEEK_API_KEY", config.model.apiKeyEnv)
             assertEquals("deepseek-v4-flash", config.model.model)
+            assertEquals(Duration.ofSeconds(30), config.model.streamIdleTimeout)
+            assertEquals("deepseek-v4-flash-2026-08-19-cny", config.model.pricing.version)
+            assertEquals("CNY", config.model.pricing.currency)
+            assertEquals(0, config.model.pricing.cacheReadPerMillion.compareTo("0.02".toBigDecimal()))
             assertEquals(2, config.model.retryPolicy.maxRetries)
             assertEquals(root.resolve("data/session.jsonl"), config.sessionPath)
             assertEquals(root, config.workspaceRoot)
@@ -57,6 +61,14 @@ class AppConfigLoaderTest {
               base-url: https://api.deepseek.com
               connect-timeout-seconds: 10
               request-timeout-seconds: 60
+              stream-idle-timeout-seconds: 30
+              pricing:
+                version: deepseek-v4-flash-2026-08-19-cny
+                currency: CNY
+                input-per-million: "1.00"
+                cache-read-per-million: "0.02"
+                cache-write-per-million: "0"
+                output-per-million: "2.00"
               retry:
                 max-retries: 2
                 initial-delay-ms: 500

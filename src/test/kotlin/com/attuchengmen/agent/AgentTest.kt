@@ -10,6 +10,9 @@ import com.attuchengmen.agent.model.ModelRequestException
 import com.attuchengmen.agent.model.ModelResponse
 import com.attuchengmen.agent.model.ModelRetryPolicy
 import com.attuchengmen.agent.model.ModelChunk
+import com.attuchengmen.agent.model.ModelFinishReason
+import com.attuchengmen.agent.model.ModelProfile
+import com.attuchengmen.agent.model.TokenUsage
 import com.attuchengmen.agent.model.ToolCall
 import com.attuchengmen.agent.model.ToolDefinition
 import com.attuchengmen.agent.session.AssistantMessageAdded
@@ -32,12 +35,16 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.yield
-import kotlinx.coroutines.flow.flowOf
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import java.time.Clock
 import java.time.Duration
+import java.time.Instant
+import java.time.ZoneOffset
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -112,6 +119,94 @@ class AgentTest {
             session.events.filterIsInstance<ModelRetryScheduled>(),
         )
         assertEquals(2, session.events.filterIsInstance<ModelRequestPrepared>().size)
+    }
+
+    @Test
+    fun `partial chunks remain attributed to the attempt that produced them`() = runBlocking {
+        val session = Session()
+        val model = object : LanguageModel {
+            override val retryPolicy = ModelRetryPolicy(1, Duration.ofMillis(1), Duration.ofMillis(1))
+            var requests = 0
+
+            override suspend fun generate(request: ModelRequest): ModelResponse =
+                error("stream should be used")
+
+            override fun stream(request: ModelRequest) = flow {
+                requests += 1
+                if (requests == 1) {
+                    emit(ModelChunk.TextDelta("par"))
+                    throw ModelRequestException("stream stalled", retryable = true)
+                }
+                emit(ModelChunk.TextDelta("done"))
+                emit(ModelChunk.Finished(ModelResponse.Answer(AssistantMessage("done"))))
+            }
+        }
+        val agent = Agent(session, model, ToolRegistry(), TEST_OPTIONS)
+
+        assertEquals(AssistantMessage("done"), agent.submit("hello"))
+
+        assertEquals(
+            listOf(
+                ModelChunkReceived(1, 1, 1, ModelChunk.TextDelta("par")),
+                ModelChunkReceived(1, 1, 2, ModelChunk.TextDelta("done")),
+                ModelChunkReceived(
+                    1,
+                    1,
+                    2,
+                    ModelChunk.Finished(ModelResponse.Answer(AssistantMessage("done"))),
+                ),
+            ),
+            session.events.filterIsInstance<ModelChunkReceived>(),
+        )
+    }
+
+    @Test
+    fun `max token response returns partial answer with a distinct turn outcome`() = runBlocking {
+        val session = Session()
+        val usage = TokenUsage(inputTokens = 100, outputTokens = 20)
+        val modelProfile = ModelProfile("test-provider", "test-model")
+        val model = object : LanguageModel {
+            override val profile = modelProfile
+
+            override suspend fun generate(request: ModelRequest): ModelResponse =
+                error("stream should be used")
+
+            override fun stream(request: ModelRequest) = flowOf(
+                ModelChunk.TextDelta("partial"),
+                ModelChunk.Usage(usage),
+                ModelChunk.Finished(
+                    ModelResponse.Answer(AssistantMessage("partial")),
+                    ModelFinishReason.MAX_TOKENS,
+                ),
+            )
+        }
+        val observedAt = Instant.parse("2026-08-19T10:15:30Z")
+        val agent = Agent(
+            session,
+            model,
+            ToolRegistry(),
+            TEST_OPTIONS,
+            Clock.fixed(observedAt, ZoneOffset.UTC),
+        )
+
+        assertEquals(AssistantMessage("partial"), agent.submit("hello"))
+
+        assertEquals(
+            TurnOutcome.MaxTokens,
+            session.events.filterIsInstance<TurnEnded>().single().outcome,
+        )
+        assertEquals(
+            listOf(usage),
+            session.events.filterIsInstance<ModelChunkReceived>()
+                .mapNotNull { (it.chunk as? ModelChunk.Usage)?.usage },
+        )
+        assertEquals(modelProfile, session.events.filterIsInstance<ModelRequestPrepared>().single().profile)
+        assertEquals(
+            observedAt,
+            session.events.filterIsInstance<ModelChunkReceived>()
+                .single { it.chunk is ModelChunk.Usage }
+                .observedAt,
+        )
     }
 
     @Test

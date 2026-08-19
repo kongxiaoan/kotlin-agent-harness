@@ -10,6 +10,10 @@ import kotlinx.coroutines.flow.flow
  * 这个接口提供“完整模型请求生成一个模型结果”的能力。
  */
 fun interface LanguageModel {
+    /** Provider、模型与可选价格快照；缺失表示该实现不提供商业归因。 */
+    val profile: ModelProfile?
+        get() = null
+
     /** Provider 拥有的重试策略；缺失时 Runtime 不重试。 */
     val retryPolicy: ModelRetryPolicy?
         get() = null

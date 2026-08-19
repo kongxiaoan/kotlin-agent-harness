@@ -18,8 +18,9 @@
 - Turn 总超时可配置，超时与调用方取消使用不同终态。
 - 模型 Provider 可声明有界指数退避策略；Runtime 只重试明确标记的瞬时模型失败。
 - Runtime 记录并组装 `ModelChunk` 流；非流式 Provider 通过兼容实现产生一个终态 chunk。
-- `DeepSeekAdapter` 支持文本和单个工具调用的 SSE 增量组装。
-- Session 在持久化后发布实时事件，终端按 Step 增量显示模型文本且不重复最终答案。
+- `DeepSeekAdapter` 支持文本和单个工具调用的 SSE 增量组装，并在流长期无数据时中止和重试。
+- Provider Usage、模型身份和价格快照持久化到 Session；支持精确成本、缓存率和重试浪费统计。
+- Session 在持久化后发布实时事件，终端按 attempt 增量显示模型文本、标记失败重试且不重复最终答案。
 - 提供限制在工作区内、带大小上限的 `read_file` 工具。
 - 使用 SLF4J + Logback 输出运行日志，使用 kotlinx.serialization 处理 JSON。
 
@@ -46,7 +47,7 @@ val session = Session(JsonlFileSessionLog(Path.of("data/session.jsonl")))
 
 ## 阅读入口
 
-先阅读 [开发与架构学习指南](docs/development-guide.md)，再按其中标注的顺序阅读源码。`src/main/kotlin/Main.kt` 是应用组装入口。
+先阅读 [Agent Runtime 架构与核心知识](docs/agent-runtime-architecture.md)，再通过[开发与架构学习指南](docs/development-guide.md)进入源码；Token 与商业计量见 [Token Usage 文档](docs/token-usage.md)。`src/main/kotlin/Main.kt` 是应用组装入口。
 
 ## 验证
 

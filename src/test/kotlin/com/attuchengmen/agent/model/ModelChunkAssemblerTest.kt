@@ -49,4 +49,33 @@ class ModelChunkAssemblerTest {
             assembler.push(ModelChunk.Finished(ModelResponse.Answer(AssistantMessage("different"))))
         }
     }
+
+    @Test
+    fun `usage and finish reason remain available after assembly`() {
+        val assembler = ModelChunkAssembler()
+        val usage = TokenUsage(inputTokens = 100, outputTokens = 20, reasoningTokens = 5)
+        assembler.push(ModelChunk.TextDelta("partial"))
+        assembler.push(ModelChunk.Usage(usage))
+        assembler.push(
+            ModelChunk.Finished(
+                ModelResponse.Answer(AssistantMessage("partial")),
+                ModelFinishReason.MAX_TOKENS,
+            ),
+        )
+
+        assembler.finish()
+
+        assertEquals(usage, assembler.usage)
+        assertEquals(ModelFinishReason.MAX_TOKENS, assembler.finishReason)
+    }
+
+    @Test
+    fun `tool response requires tool calls finish reason`() {
+        val assembler = ModelChunkAssembler()
+        val response = ModelResponse.ToolRequest(ToolCall("call-1", "read_file", "{}"))
+
+        assertFailsWith<ModelStreamProtocolException> {
+            assembler.push(ModelChunk.Finished(response, ModelFinishReason.STOP))
+        }
+    }
 }
