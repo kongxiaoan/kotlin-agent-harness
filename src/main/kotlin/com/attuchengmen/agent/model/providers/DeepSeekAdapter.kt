@@ -26,7 +26,6 @@ import kotlinx.serialization.SerializationException
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -115,14 +114,11 @@ class DeepSeekAdapter(
     }
 
     override fun stream(request: ModelRequest): Flow<ModelChunk> {
-        if (request.tools.isNotEmpty()) {
-            return flow { emit(ModelChunk.Finished(generate(request))) }
-        }
-        return streamText(request)
+        return streamSse(request)
     }
 
-    /** 文本专用 SSE 路径；工具请求在支持增量组装前使用非流式路径。 */
-    private fun streamText(request: ModelRequest): Flow<ModelChunk> = flow {
+    /** 将 DeepSeek 文本和单工具调用增量转换为 Runtime chunk。 */
+    private fun streamSse(request: ModelRequest): Flow<ModelChunk> = flow {
         val response = try {
             client.sendAsync(createRequest(request, stream = true), HttpResponse.BodyHandlers.ofInputStream()).await()
         } catch (error: IOException) {
@@ -134,6 +130,7 @@ class DeepSeekAdapter(
         }
 
         val text = StringBuilder()
+        var toolCall: StreamingToolCall? = null
         response.body().bufferedReader(UTF_8).use { reader ->
             val events = DeepSeekSseReader(reader)
             while (true) {
@@ -144,16 +141,56 @@ class DeepSeekAdapter(
                     throw DeepSeekTransportException(error)
                 } ?: throw DeepSeekTransportException(IOException("SSE stream ended without [DONE]"))
                 if (payload == "[DONE]") {
-                    if (text.isEmpty()) {
-                        throw ModelRequestException("DeepSeek stream produced no content", retryable = true)
+                    val pendingCall = toolCall
+                    if (pendingCall != null) {
+                        val id = pendingCall.id
+                            ?: throw DeepSeekProtocolException("streaming tool call has no id")
+                        val name = pendingCall.name
+                            ?: throw DeepSeekProtocolException("streaming tool call has no function name")
+                        emit(
+                            ModelChunk.Finished(
+                                ModelResponse.ToolRequest(
+                                    call = ToolCall(id, name, pendingCall.arguments.toString()),
+                                    content = text.toString().takeIf { it.isNotEmpty() },
+                                ),
+                            ),
+                        )
+                        return@flow
                     }
+                    if (text.isEmpty()) throw ModelRequestException(
+                        "DeepSeek stream produced no content",
+                        retryable = true,
+                    )
                     emit(ModelChunk.Finished(ModelResponse.Answer(AssistantMessage(text.toString()))))
                     return@flow
                 }
-                val chunk = decodeStreamChunk(payload)
-                if (chunk != null) {
-                    text.append(chunk)
-                    emit(ModelChunk.TextDelta(chunk))
+                val delta = decodeStreamDelta(payload) ?: continue
+                val content = delta.content
+                if (!content.isNullOrEmpty()) {
+                    text.append(content)
+                    emit(ModelChunk.TextDelta(content))
+                }
+                for (call in delta.toolCalls.orEmpty()) {
+                    if (call.index < 0) throw DeepSeekProtocolException("tool call index must not be negative")
+                    if (call.type != null && call.type != "function") {
+                        throw DeepSeekProtocolException("unsupported streaming tool call type \"${call.type}\"")
+                    }
+                    val pending = toolCall ?: StreamingToolCall(call.index).also { toolCall = it }
+                    if (pending.index != call.index) {
+                        throw DeepSeekProtocolException("multiple streaming tool calls are not supported")
+                    }
+                    call.id?.let { pending.id = mergeStreamField("id", pending.id, it) }
+                    call.function?.name?.let { pending.name = mergeStreamField("name", pending.name, it) }
+                    val argumentsDelta = call.function?.arguments.orEmpty()
+                    pending.arguments.append(argumentsDelta)
+                    emit(
+                        ModelChunk.ToolCallDelta(
+                            index = call.index,
+                            id = pending.id.orEmpty(),
+                            name = pending.name,
+                            argumentsDelta = argumentsDelta,
+                        ),
+                    )
                 }
             }
         }
@@ -185,7 +222,7 @@ class DeepSeekAdapter(
         return json.encodeToString(JsonObject.serializer(), body)
     }
 
-    private fun decodeStreamChunk(payload: String): String? {
+    private fun decodeStreamDelta(payload: String): DeepSeekDelta? {
         val response = try {
             json.decodeFromString<DeepSeekStreamResponse>(payload)
         } catch (error: SerializationException) {
@@ -195,11 +232,14 @@ class DeepSeekAdapter(
         if (response.choices.size != 1) {
             throw DeepSeekProtocolException("expected one streaming choice, found ${response.choices.size}")
         }
-        val delta = response.choices.single().delta
-        if (delta.toolCalls != null && delta.toolCalls !is JsonNull) {
-            throw DeepSeekProtocolException("streaming tool calls are not supported yet")
+        return response.choices.single().delta
+    }
+
+    private fun mergeStreamField(field: String, previous: String?, next: String): String {
+        if (previous != null && previous != next) {
+            throw DeepSeekProtocolException("streaming tool call $field changed")
         }
-        return delta.content?.takeIf { it.isNotEmpty() }
+        return next
     }
 
     private fun decodeResponse(body: String): ModelResponse {
@@ -326,7 +366,28 @@ private data class DeepSeekStreamChoice(
 @Serializable
 private data class DeepSeekDelta(
     val content: String? = null,
-    @SerialName("tool_calls") val toolCalls: JsonElement? = null,
+    @SerialName("tool_calls") val toolCalls: List<DeepSeekStreamToolCall>? = null,
+)
+
+@Serializable
+private data class DeepSeekStreamToolCall(
+    val index: Int,
+    val id: String? = null,
+    val type: String? = null,
+    val function: DeepSeekStreamFunction? = null,
+)
+
+@Serializable
+private data class DeepSeekStreamFunction(
+    val name: String? = null,
+    val arguments: String? = null,
+)
+
+private data class StreamingToolCall(
+    val index: Int,
+    var id: String? = null,
+    var name: String? = null,
+    val arguments: StringBuilder = StringBuilder(),
 )
 
 /** 按 SSE 空行边界读取 `data:` 字段；网络分片由 BufferedReader 处理。 */

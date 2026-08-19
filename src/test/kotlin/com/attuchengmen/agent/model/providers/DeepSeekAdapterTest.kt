@@ -46,9 +46,17 @@ class DeepSeekAdapterTest {
     }
 
     @Test
-    fun `requests with tools retain the non-streaming tool-capable path`() = withServer(
+    fun `streaming tool call deltas preserve raw json arguments`() = withServer(
         responseStatus = 200,
-        responseBody = """{"choices":[{"message":{"role":"assistant","content":"done"}}]}""",
+        responseBody = listOf(
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\"\"}}]}}]}",
+            "",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\":\\\"README.md\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}",
+            "",
+            "data: [DONE]",
+            "",
+            "",
+        ).joinToString("\n"),
     ) { server, received ->
         val tool = ToolDefinition(
             name = "read_file",
@@ -63,10 +71,18 @@ class DeepSeekAdapterTest {
         }
 
         assertEquals(
-            listOf(ModelChunk.Finished(ModelResponse.Answer(AssistantMessage("done")))),
+            listOf(
+                ModelChunk.ToolCallDelta(0, "call-1", "read_file", "{\"path\""),
+                ModelChunk.ToolCallDelta(0, "call-1", "read_file", ":\"README.md\"}"),
+                ModelChunk.Finished(
+                    ModelResponse.ToolRequest(
+                        ToolCall("call-1", "read_file", "{\"path\":\"README.md\"}"),
+                    ),
+                ),
+            ),
             chunks,
         )
-        assertTrue(received.body.contains("\"stream\":false"))
+        assertTrue(received.body.contains("\"stream\":true"))
     }
 
     @Test

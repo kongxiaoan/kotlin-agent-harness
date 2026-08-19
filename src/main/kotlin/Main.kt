@@ -38,7 +38,15 @@ suspend fun main(args: Array<String>) {
         ),
     )
 
-    println(agent.submit(task).content)
+    val renderer = TerminalStreamRenderer(System.out)
+    session.subscribe(renderer::onEvent).use {
+        try {
+            renderer.finish(agent.submit(task))
+        } catch (error: Exception) {
+            renderer.finishFailure()
+            throw error
+        }
+    }
 }
 
 /** Adapter 选择只存在于应用组装层，不进入 Agent Runtime。 */

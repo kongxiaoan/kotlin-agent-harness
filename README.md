@@ -18,7 +18,8 @@
 - Turn 总超时可配置，超时与调用方取消使用不同终态。
 - 模型 Provider 可声明有界指数退避策略；Runtime 只重试明确标记的瞬时模型失败。
 - Runtime 记录并组装 `ModelChunk` 流；非流式 Provider 通过兼容实现产生一个终态 chunk。
-- `DeepSeekAdapter` 支持纯文本 SSE；携带工具定义的请求暂时保留非流式路径。
+- `DeepSeekAdapter` 支持文本和单个工具调用的 SSE 增量组装。
+- Session 在持久化后发布实时事件，终端按 Step 增量显示模型文本且不重复最终答案。
 - 提供限制在工作区内、带大小上限的 `read_file` 工具。
 - 使用 SLF4J + Logback 输出运行日志，使用 kotlinx.serialization 处理 JSON。
 

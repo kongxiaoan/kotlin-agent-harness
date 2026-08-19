@@ -41,6 +41,12 @@ class SessionEventJsonTest {
                 1,
                 2,
                 attempt = 1,
+                chunk = ModelChunk.ToolCallDelta(0, "call-1", "read_file", "{\"path\":"),
+            ),
+            ModelChunkReceived(
+                1,
+                2,
+                attempt = 1,
                 chunk = ModelChunk.Finished(ModelResponse.Answer(AssistantMessage("hi"))),
             ),
             TurnStarted(turn = 1),

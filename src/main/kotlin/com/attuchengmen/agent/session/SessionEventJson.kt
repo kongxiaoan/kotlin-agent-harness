@@ -94,6 +94,15 @@ private sealed interface StoredModelChunk
 private data class StoredTextDelta(val text: String) : StoredModelChunk
 
 @Serializable
+@SerialName("tool-call-delta")
+private data class StoredToolCallDelta(
+    val index: Int,
+    val id: String,
+    val name: String? = null,
+    val argumentsDelta: String,
+) : StoredModelChunk
+
+@Serializable
 @SerialName("finished")
 private data class StoredFinished(val response: StoredModelResponse) : StoredModelChunk
 
@@ -235,11 +244,13 @@ private fun StoredSessionEvent.toDomain(): SessionEvent = when (this) {
 
 private fun ModelChunk.toStored(): StoredModelChunk = when (this) {
     is ModelChunk.TextDelta -> StoredTextDelta(text)
+    is ModelChunk.ToolCallDelta -> StoredToolCallDelta(index, id, name, argumentsDelta)
     is ModelChunk.Finished -> StoredFinished(response.toStored())
 }
 
 private fun StoredModelChunk.toDomain(): ModelChunk = when (this) {
     is StoredTextDelta -> ModelChunk.TextDelta(text)
+    is StoredToolCallDelta -> ModelChunk.ToolCallDelta(index, id, name, argumentsDelta)
     is StoredFinished -> ModelChunk.Finished(response.toDomain())
 }
 
