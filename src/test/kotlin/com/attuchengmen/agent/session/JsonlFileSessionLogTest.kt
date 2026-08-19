@@ -37,6 +37,27 @@ class JsonlFileSessionLogTest {
         assertEquals(1, failure.lineNumber)
     }
 
+    @Test
+    fun `reopening repairs and persists an interrupted turn`() = withTempLog { path ->
+        val original = Session(JsonlFileSessionLog(path))
+        original.append(TurnStarted(turn = 1))
+        original.append(StepStarted(turn = 1, step = 1))
+
+        val recovered = Session(JsonlFileSessionLog(path))
+
+        assertEquals(
+            listOf(
+                TurnStarted(turn = 1),
+                StepStarted(turn = 1, step = 1),
+                StepEnded(turn = 1, step = 1),
+                TurnEnded(turn = 1, outcome = TurnOutcome.Interrupted),
+            ),
+            recovered.events,
+        )
+        assertEquals(recovered.events.size, path.readLines().size)
+        assertEquals(recovered.events, Session(JsonlFileSessionLog(path)).events)
+    }
+
     private fun withTempLog(test: (Path) -> Unit) {
         val path = Files.createTempFile("dsh-session-", ".jsonl")
         try {

@@ -29,7 +29,14 @@ class JsonlFileSessionLog(
     private val eventLog = load(path).toMutableList()
 
     init {
-        logger.info("Opened session log path={} events={}", path.toAbsolutePath(), eventLog.size)
+        val repairs = SessionRecovery.interruptedTurnClosers(eventLog)
+        repairs.forEach(::append)
+        logger.info(
+            "Opened session log path={} events={} repairedEvents={}",
+            path.toAbsolutePath(),
+            eventLog.size,
+            repairs.size,
+        )
     }
 
     override val events: List<SessionEvent>

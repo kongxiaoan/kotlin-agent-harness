@@ -6,6 +6,7 @@
 
 - 使用追加式 `SessionEvent` 记录 Agent 的运行事实。
 - 支持内存日志和 JSONL 文件日志，重启后可恢复 Session 事实。
+- JSONL 重启会追加修复崩溃时未闭合的工具结果、Step 和 Turn。
 - 从事件日志投影模型需要的消息历史。
 - 通过 `LanguageModel` 端口调用可替换的模型实现。
 - 通过 `ToolRegistry` 执行工具，并用后续 Step 把结果交回模型。

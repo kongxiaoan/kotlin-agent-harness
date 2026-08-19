@@ -93,6 +93,9 @@ sealed interface TurnOutcome {
     /** Turn 因调用方取消而结束；取消不是业务失败。 */
     data object Cancelled : TurnOutcome
 
+    /** 持久化加载发现进程在 Turn 完成前退出。 */
+    data object Interrupted : TurnOutcome
+
     /** Turn 达到 Runtime 配置的总执行时间限制。 */
     data class TimedOut(
         val timeout: Duration,

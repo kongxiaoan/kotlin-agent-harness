@@ -38,8 +38,9 @@ class SessionEventJsonTest {
             StepEnded(turn = 1, step = 2),
             TurnEnded(turn = 1, outcome = TurnOutcome.Completed),
             TurnEnded(turn = 2, outcome = TurnOutcome.Cancelled),
-            TurnEnded(turn = 3, outcome = TurnOutcome.TimedOut(Duration.ofSeconds(30))),
-            TurnEnded(turn = 4, outcome = TurnOutcome.Failed("model unavailable")),
+            TurnEnded(turn = 3, outcome = TurnOutcome.Interrupted),
+            TurnEnded(turn = 4, outcome = TurnOutcome.TimedOut(Duration.ofSeconds(30))),
+            TurnEnded(turn = 5, outcome = TurnOutcome.Failed("model unavailable")),
         )
 
         for (event in events) {

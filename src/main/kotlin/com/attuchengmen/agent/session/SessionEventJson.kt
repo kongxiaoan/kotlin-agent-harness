@@ -119,6 +119,10 @@ private data object StoredCompleted : StoredTurnOutcome
 private data object StoredCancelled : StoredTurnOutcome
 
 @Serializable
+@SerialName("interrupted")
+private data object StoredInterrupted : StoredTurnOutcome
+
+@Serializable
 @SerialName("timed-out")
 private data class StoredTimedOut(val timeoutMillis: Long) : StoredTurnOutcome
 
@@ -151,6 +155,7 @@ private fun SessionEvent.toStored(): StoredSessionEvent = when (this) {
         outcome = when (val value = outcome) {
             TurnOutcome.Completed -> StoredCompleted
             TurnOutcome.Cancelled -> StoredCancelled
+            TurnOutcome.Interrupted -> StoredInterrupted
             is TurnOutcome.TimedOut -> StoredTimedOut(value.timeout.toMillis())
             is TurnOutcome.Failed -> StoredFailed(value.message)
         },
@@ -182,6 +187,7 @@ private fun StoredSessionEvent.toDomain(): SessionEvent = when (this) {
         outcome = when (val value = outcome) {
             StoredCompleted -> TurnOutcome.Completed
             StoredCancelled -> TurnOutcome.Cancelled
+            StoredInterrupted -> TurnOutcome.Interrupted
             is StoredTimedOut -> TurnOutcome.TimedOut(Duration.ofMillis(value.timeoutMillis))
             is StoredFailed -> TurnOutcome.Failed(value.message)
         },

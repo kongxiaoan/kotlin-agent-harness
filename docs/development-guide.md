@@ -34,13 +34,14 @@ Agent.submit(content)
 3. `session/SessionLog.kt`：内存与持久化实现共同遵守的追加接口。
 4. `session/Session.kt`：Session 对存储实现的封装。
 5. `session/SessionEventJson.kt`：领域事件和文件 DTO 的显式映射。
-6. `session/JsonlFileSessionLog.kt`：JSONL 追加与恢复。
-7. `session/SessionProjector.kt`：事实如何转换成模型上下文。
-8. `model/LanguageModel.kt`：核心代码依赖的模型端口。
-9. `tool/`：工具定义、注册表和受工作区限制的文件读取实现。
-10. `Agent.kt`：驱动 Turn、Step、模型和工具。
-11. `SessionEventJsonTest.kt`、`JsonlFileSessionLogTest.kt`：验证格式往返、恢复和损坏文件失败。
-12. 其余测试：验证投影、内存日志和 Agent 编排行为。
+6. `session/JsonlFileSessionLog.kt`：JSONL 追加与加载。
+7. `session/SessionRecovery.kt`：崩溃尾部如何补齐工具、Step 和 Turn。
+8. `session/SessionProjector.kt`：事实如何转换成模型上下文。
+9. `model/LanguageModel.kt`：核心代码依赖的模型端口。
+10. `tool/`：工具定义、注册表和受工作区限制的文件读取实现。
+11. `Agent.kt`：驱动 Turn、Step、模型和工具。
+12. Session 测试：验证格式往返、恢复和损坏文件失败。
+13. 其余测试：验证投影、内存日志和 Agent 编排行为。
 
 阅读时对每个模块回答：它拥有什么状态、谁能修改状态、输入输出是什么、失败如何传播、它依赖哪些模块。
 
@@ -84,6 +85,8 @@ Agent Runtime 只需要“完整请求产生一个结果”的能力，不应该
 JSON DTO 与领域事件分离。`SessionEventJson` 显式完成双向映射，因此磁盘字段属于存储边界，不要求核心领域类型携带序列化注解。
 
 文件加载采用失败即停止：未知事件或无效 JSON 会抛出包含路径和行号的 `SessionLogFormatException`。当前不支持多个进程同时写一个文件，也不承诺断电级 `fsync` 持久性。
+
+加载发现开放 Turn 时，`SessionRecovery` 只向日志尾部追加修复事件，不改写历史。未配对的 `ToolCallRequested` 会得到 `isError = true` 的未知结果，然后依次补齐 `StepEnded` 和 `TurnOutcome.Interrupted`。工具可能已经产生外部副作用，因此恢复信息要求模型仅对只读或幂等工具重试；其他工具必须先核对外部状态。
 
 ### 运行日志
 
