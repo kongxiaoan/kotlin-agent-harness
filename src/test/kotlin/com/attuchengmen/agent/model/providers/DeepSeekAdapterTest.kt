@@ -6,6 +6,7 @@ import com.attuchengmen.agent.message.ToolResultMessage
 import com.attuchengmen.agent.message.UserMessage
 import com.attuchengmen.agent.model.ModelRequest
 import com.attuchengmen.agent.model.ModelResponse
+import com.attuchengmen.agent.model.ModelRetryPolicy
 import com.attuchengmen.agent.model.ToolCall
 import com.attuchengmen.agent.model.ToolDefinition
 import com.sun.net.httpserver.HttpServer
@@ -21,9 +22,18 @@ import java.time.Duration
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 import kotlinx.coroutines.runBlocking
 
 class DeepSeekAdapterTest {
+    @Test
+    fun `http failure classification only retries transient statuses`() {
+        assertTrue(DeepSeekHttpException(429, "busy").retryable)
+        assertTrue(DeepSeekHttpException(503, "unavailable").retryable)
+        assertFalse(DeepSeekHttpException(401, "unauthorized").retryable)
+    }
+
     @Test
     fun `maps runtime request to DeepSeek protocol`() = withServer(
         responseStatus = 200,
@@ -102,6 +112,7 @@ class DeepSeekAdapterTest {
         baseUri = URI("http://127.0.0.1:${server.address.port}"),
         connectTimeout = Duration.ofSeconds(2),
         requestTimeout = Duration.ofSeconds(2),
+        retryPolicy = ModelRetryPolicy(2, Duration.ofMillis(1), Duration.ofMillis(4)),
     )
 
     private fun withServer(

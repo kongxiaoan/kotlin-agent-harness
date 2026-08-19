@@ -3,9 +3,11 @@ package com.attuchengmen.agent
 import com.attuchengmen.agent.message.AssistantMessage
 import com.attuchengmen.agent.model.LanguageModel
 import com.attuchengmen.agent.model.ModelRequest
+import com.attuchengmen.agent.model.ModelRequestException
 import com.attuchengmen.agent.model.ModelResponse
 import com.attuchengmen.agent.session.AssistantMessageAdded
 import com.attuchengmen.agent.session.ModelRequestPrepared
+import com.attuchengmen.agent.session.ModelRetryScheduled
 import com.attuchengmen.agent.session.Session
 import com.attuchengmen.agent.session.SessionProjector
 import com.attuchengmen.agent.session.StepEnded
@@ -20,6 +22,7 @@ import com.attuchengmen.agent.tool.ToolRegistry
 import com.attuchengmen.agent.tool.ToolException
 import com.attuchengmen.agent.tool.UnexpectedToolException
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
@@ -82,6 +85,7 @@ class Agent(
         val turn = nextTurnNumber()
         session.append(TurnStarted(turn))
         try {
+            //最多允许 runSteps() 执行 options.turnTimeout.toMillis().milliseconds 秒
             val message = withTimeoutOrNull(options.turnTimeout.toMillis().milliseconds) {
                 runSteps(turn, content)
             } ?: throw TurnTimeoutExceededException(options.turnTimeout)
@@ -127,8 +131,7 @@ class Agent(
                 messages = SessionProjector.toMessages(session.events),
                 tools = tools.definitions,
             )
-            session.append(ModelRequestPrepared(turn, step, request.tools))
-            return when (val response = model.generate(request)) {
+            return when (val response = generateWithRetry(turn, step, request)) {
                 is ModelResponse.Answer -> {
                     session.append(AssistantMessageAdded(response.message.content))
                     StepResult.Answer(response.message)
@@ -168,6 +171,26 @@ class Agent(
             }
         } finally {
             session.append(StepEnded(turn, step))
+        }
+    }
+
+    /** 只重试 Provider 明确标记为瞬时失败的模型请求。 */
+    private suspend fun generateWithRetry(turn: Int, step: Int, request: ModelRequest): ModelResponse {
+        var retry = 0
+        while (true) {
+            session.append(ModelRequestPrepared(turn, step, request.tools, attempt = retry + 1))
+            try {
+                return model.generate(request)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: ModelRequestException) {
+                val policy = model.retryPolicy
+                if (!error.retryable || policy == null || retry >= policy.maxRetries) throw error
+                retry += 1
+                val delayMillis = policy.delayMillis(retry)
+                session.append(ModelRetryScheduled(turn, step, retry, delayMillis, error.message.orEmpty()))
+                delay(delayMillis.milliseconds)
+            }
         }
     }
 

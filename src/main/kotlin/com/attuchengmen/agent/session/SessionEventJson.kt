@@ -61,6 +61,17 @@ private data class StoredModelRequestPrepared(
     val turn: Int,
     val step: Int,
     val tools: List<StoredToolDefinition>,
+    val attempt: Int = 1,
+) : StoredSessionEvent
+
+@Serializable
+@SerialName("model-retry-scheduled")
+private data class StoredModelRetryScheduled(
+    val turn: Int,
+    val step: Int,
+    val retry: Int,
+    val delayMillis: Long,
+    val failure: String,
 ) : StoredSessionEvent
 
 @Serializable
@@ -129,7 +140,9 @@ private fun SessionEvent.toStored(): StoredSessionEvent = when (this) {
         turn = turn,
         step = step,
         tools = tools.map { StoredToolDefinition(it.name, it.description, it.parameters) },
+        attempt = attempt,
     )
+    is ModelRetryScheduled -> StoredModelRetryScheduled(turn, step, retry, delayMillis, failure)
     is TurnStarted -> StoredTurnStarted(turn)
     is StepStarted -> StoredStepStarted(turn, step)
     is StepEnded -> StoredStepEnded(turn, step)
@@ -158,7 +171,9 @@ private fun StoredSessionEvent.toDomain(): SessionEvent = when (this) {
         turn = turn,
         step = step,
         tools = tools.map { ToolDefinition(it.name, it.description, it.parameters) },
+        attempt = attempt,
     )
+    is StoredModelRetryScheduled -> ModelRetryScheduled(turn, step, retry, delayMillis, failure)
     is StoredTurnStarted -> TurnStarted(turn)
     is StoredStepStarted -> StepStarted(turn, step)
     is StoredStepEnded -> StepEnded(turn, step)

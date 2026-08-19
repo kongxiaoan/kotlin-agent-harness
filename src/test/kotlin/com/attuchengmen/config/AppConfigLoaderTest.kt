@@ -20,6 +20,7 @@ class AppConfigLoaderTest {
             assertEquals("deepseek", config.model.provider)
             assertEquals("DEEPSEEK_API_KEY", config.model.apiKeyEnv)
             assertEquals("deepseek-v4-flash", config.model.model)
+            assertEquals(2, config.model.retryPolicy.maxRetries)
             assertEquals(root.resolve("data/session.jsonl"), config.sessionPath)
             assertEquals(root, config.workspaceRoot)
             assertEquals(1_048_576, config.readFileMaxBytes)
@@ -56,6 +57,10 @@ class AppConfigLoaderTest {
               base-url: https://api.deepseek.com
               connect-timeout-seconds: 10
               request-timeout-seconds: 60
+              retry:
+                max-retries: 2
+                initial-delay-ms: 500
+                max-delay-ms: 4000
             session:
               path: data/session.jsonl
             workspace:

@@ -54,6 +54,7 @@ private fun createModel(config: AppConfig): LanguageModel = when (config.model.p
                 baseUri = config.model.baseUri,
                 connectTimeout = config.model.connectTimeout,
                 requestTimeout = config.model.requestTimeout,
+                retryPolicy = config.model.retryPolicy,
             ),
         )
     }

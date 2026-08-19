@@ -26,6 +26,7 @@ object SessionProjector {
                 is ToolCallRequested -> ToolCallMessage(event.call, event.content)
                 is ToolResultAdded -> ToolResultMessage(event.callId, event.content, event.isError)
                 is ModelRequestPrepared -> null
+                is ModelRetryScheduled -> null
                 is TurnStarted -> null
                 is StepStarted -> null
                 is StepEnded -> null
@@ -34,12 +35,12 @@ object SessionProjector {
         }
 
     /** 根据请求边界之前的消息事实和已记录工具定义重建一次模型请求。 */
-    fun toRequest(events: List<SessionEvent>, turn: Int, step: Int): ModelRequest {
+    fun toRequest(events: List<SessionEvent>, turn: Int, step: Int, attempt: Int = 1): ModelRequest {
         val matches = events.withIndex().filter { (_, event) ->
-            event is ModelRequestPrepared && event.turn == turn && event.step == step
+            event is ModelRequestPrepared && event.turn == turn && event.step == step && event.attempt == attempt
         }
         require(matches.size == 1) {
-            "expected exactly one model request for turn $turn step $step, found ${matches.size}"
+            "expected exactly one model request for turn $turn step $step attempt $attempt, found ${matches.size}"
         }
         val boundary = matches.single()
         val event = boundary.value as ModelRequestPrepared

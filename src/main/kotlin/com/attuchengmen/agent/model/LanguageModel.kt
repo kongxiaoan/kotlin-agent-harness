@@ -7,6 +7,10 @@ package com.attuchengmen.agent.model
  * 这个接口提供“完整模型请求生成一个模型结果”的能力。
  */
 fun interface LanguageModel {
+    /** Provider 拥有的重试策略；缺失时 Runtime 不重试。 */
+    val retryPolicy: ModelRetryPolicy?
+        get() = null
+
     /**
      * 根据消息历史和可用工具定义生成最终答案或工具请求。
      * 模型失败直接抛出异常，由更高层决定恢复策略。

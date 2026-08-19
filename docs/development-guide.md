@@ -25,6 +25,8 @@ Agent.submit(content)
 
 `AgentOptions.turnTimeout` 限制一个 Turn 内所有模型与工具调用的总时间。超时会先取消并等待当前 Step 清理，再记录 `TimedOut` 并抛出 `TurnTimeoutExceededException`；它与外部调用方取消是两个不同事实。
 
+模型重试遵循 Harness 的请求恢复语义：重试仍发生在原 Turn 和原 Step 内。策略由模型 Provider 通过 `LanguageModel.retryPolicy` 提供；Runtime 只处理 `ModelRequestException(retryable = true)`，达到上限后传播最后一次失败。每次请求都有递增 `attempt` 的 `ModelRequestPrepared`，等待计划记录为 `ModelRetryScheduled`，因此恢复和观测不依赖内存计数。工具异常、协议错误、鉴权错误和普通 4xx 不会被重试。
+
 ## 代码阅读顺序
 
 1. `message/Message.kt`：模型能够看到的数据。
@@ -131,7 +133,7 @@ JSON DTO 与领域事件分离。`SessionEventJson` 显式完成双向映射，�
 
 ### 7. 实现最小正确改动
 
-只实现当前验收标准。不要提前加入数据库、协程、重试、Event Bus 或通用插件系统。新抽象必须回答：“它正在降低哪个已经存在的变化成本？”
+只实现当前验收标准。不要提前加入数据库、Event Bus 或通用插件系统。新抽象必须回答：“它正在降低哪个已经存在的变化成本？”
 
 ## 每个需求的开发流程
 
@@ -165,7 +167,7 @@ Problem
 
 - 流式输出
 - 一个模型响应中的并行工具调用
-- Runtime 级重试策略
+- Retry-After、随机抖动和无限重试模式
 - 插件系统和 Subagent
 
 这些会在核心行为出现真实需要时逐步加入，而不是提前设计。

@@ -6,11 +6,14 @@ import com.attuchengmen.agent.message.ToolResultMessage
 import com.attuchengmen.agent.message.UserMessage
 import com.attuchengmen.agent.model.LanguageModel
 import com.attuchengmen.agent.model.ModelRequest
+import com.attuchengmen.agent.model.ModelRequestException
 import com.attuchengmen.agent.model.ModelResponse
+import com.attuchengmen.agent.model.ModelRetryPolicy
 import com.attuchengmen.agent.model.ToolCall
 import com.attuchengmen.agent.model.ToolDefinition
 import com.attuchengmen.agent.session.AssistantMessageAdded
 import com.attuchengmen.agent.session.ModelRequestPrepared
+import com.attuchengmen.agent.session.ModelRetryScheduled
 import com.attuchengmen.agent.session.Session
 import com.attuchengmen.agent.session.SessionProjector
 import com.attuchengmen.agent.session.StepEnded
@@ -28,6 +31,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.yield
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.time.Duration
@@ -42,6 +46,84 @@ import kotlin.test.assertFailsWith
  * 异常不会被吞掉，也不会在 Session 中产生虚假回复。
  */
 class AgentTest {
+    @Test
+    fun `retryable model failure retries inside the same step`() = runBlocking {
+        val session = Session()
+        val model = object : LanguageModel {
+            override val retryPolicy = ModelRetryPolicy(
+                maxRetries = 2,
+                initialDelay = Duration.ofMillis(1),
+                maxDelay = Duration.ofMillis(4),
+            )
+            var requests = 0
+
+            override suspend fun generate(request: ModelRequest): ModelResponse {
+                requests += 1
+                if (requests == 1) throw ModelRequestException("service unavailable", retryable = true)
+                return ModelResponse.Answer(AssistantMessage("recovered"))
+            }
+        }
+        val agent = Agent(session, model, ToolRegistry(), TEST_OPTIONS)
+
+        val reply = agent.submit("hello")
+
+        assertEquals(AssistantMessage("recovered"), reply)
+        assertEquals(2, model.requests)
+        assertEquals(listOf(1), session.events.filterIsInstance<StepStarted>().map { it.step })
+        assertEquals(
+            listOf(ModelRetryScheduled(1, 1, retry = 1, delayMillis = 1, failure = "service unavailable")),
+            session.events.filterIsInstance<ModelRetryScheduled>(),
+        )
+        assertEquals(2, session.events.filterIsInstance<ModelRequestPrepared>().size)
+    }
+
+    @Test
+    fun `retry limit preserves the final model failure`() = runBlocking {
+        val session = Session()
+        val model = object : LanguageModel {
+            override val retryPolicy = ModelRetryPolicy(2, Duration.ofMillis(1), Duration.ofMillis(2))
+            var requests = 0
+
+            override suspend fun generate(request: ModelRequest): ModelResponse {
+                requests += 1
+                throw ModelRequestException("still unavailable", retryable = true)
+            }
+        }
+        val agent = Agent(session, model, ToolRegistry(), TEST_OPTIONS)
+
+        assertFailsWith<ModelRequestException> { agent.submit("hello") }
+
+        assertEquals(3, model.requests)
+        assertEquals(2, session.events.filterIsInstance<ModelRetryScheduled>().size)
+        assertEquals(
+            TurnOutcome.Failed("still unavailable"),
+            session.events.filterIsInstance<TurnEnded>().single().outcome,
+        )
+    }
+
+    @Test
+    fun `caller cancellation during backoff prevents another request`() = runBlocking {
+        val session = Session()
+        val model = object : LanguageModel {
+            override val retryPolicy = ModelRetryPolicy(2, Duration.ofMinutes(1), Duration.ofMinutes(1))
+            var requests = 0
+
+            override suspend fun generate(request: ModelRequest): ModelResponse {
+                requests += 1
+                throw ModelRequestException("busy", retryable = true)
+            }
+        }
+        val agent = Agent(session, model, ToolRegistry(), TEST_OPTIONS)
+        val submission = async { agent.submit("hello") }
+        while (session.events.none { it is ModelRetryScheduled }) yield()
+
+        submission.cancel()
+        assertFailsWith<CancellationException> { submission.await() }
+
+        assertEquals(1, model.requests)
+        assertEquals(TurnOutcome.Cancelled, session.events.filterIsInstance<TurnEnded>().single().outcome)
+    }
+
     @Test
     fun `turn timeout closes the active step with a distinct terminal outcome`() = runBlocking {
         val session = Session()

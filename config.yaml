@@ -5,6 +5,10 @@ model:
   base-url: https://api.deepseek.com
   connect-timeout-seconds: 10
   request-timeout-seconds: 60
+  retry:
+    max-retries: 2
+    initial-delay-ms: 500
+    max-delay-ms: 4000
 
 agent:
 # 可配置的 Turn 最大 Step 数，防止模型无限调用工具

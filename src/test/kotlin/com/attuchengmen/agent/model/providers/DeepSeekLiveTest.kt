@@ -3,6 +3,7 @@ package com.attuchengmen.agent.model.providers
 import com.attuchengmen.agent.message.UserMessage
 import com.attuchengmen.agent.model.ModelRequest
 import com.attuchengmen.agent.model.ModelResponse
+import com.attuchengmen.agent.model.ModelRetryPolicy
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import java.net.URI
 import java.time.Duration
@@ -26,6 +27,7 @@ class DeepSeekLiveTest {
                 baseUri = baseUri,
                 connectTimeout = Duration.ofSeconds(10),
                 requestTimeout = Duration.ofSeconds(60),
+                retryPolicy = ModelRetryPolicy(2, Duration.ofMillis(500), Duration.ofSeconds(4)),
             ),
         )
 

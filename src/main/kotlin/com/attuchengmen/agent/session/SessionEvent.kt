@@ -48,6 +48,16 @@ data class ModelRequestPrepared(
     val turn: Int,
     val step: Int,
     val tools: List<ToolDefinition>,
+    val attempt: Int = 1,
+) : SessionEvent
+
+/** 一次可重试模型失败已经按 Provider 策略安排下一次请求。 */
+data class ModelRetryScheduled(
+    val turn: Int,
+    val step: Int,
+    val retry: Int,
+    val delayMillis: Long,
+    val failure: String,
 ) : SessionEvent
 
 /**

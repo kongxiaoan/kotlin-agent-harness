@@ -32,6 +32,7 @@ class SessionEventJsonTest {
                     ),
                 ),
             ),
+            ModelRetryScheduled(1, 2, retry = 1, delayMillis = 500, failure = "busy"),
             TurnStarted(turn = 1),
             StepStarted(turn = 1, step = 2),
             StepEnded(turn = 1, step = 2),

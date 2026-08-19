@@ -7,7 +7,9 @@ import com.attuchengmen.agent.message.ToolResultMessage
 import com.attuchengmen.agent.message.UserMessage
 import com.attuchengmen.agent.model.LanguageModel
 import com.attuchengmen.agent.model.ModelRequest
+import com.attuchengmen.agent.model.ModelRequestException
 import com.attuchengmen.agent.model.ModelResponse
+import com.attuchengmen.agent.model.ModelRetryPolicy
 import com.attuchengmen.agent.model.ToolCall
 import com.attuchengmen.agent.model.ToolDefinition
 import kotlinx.serialization.SerialName
@@ -41,6 +43,7 @@ data class DeepSeekConfig(
     val baseUri: URI,
     val connectTimeout: Duration,
     val requestTimeout: Duration,
+    val retryPolicy: ModelRetryPolicy,
 ) {
     init {
         require(apiKey.isNotBlank()) { "DeepSeek apiKey must not be blank" }
@@ -58,18 +61,21 @@ data class DeepSeekConfig(
 class DeepSeekHttpException(
     val statusCode: Int,
     responseBody: String,
-) : IllegalStateException("DeepSeek request failed with HTTP $statusCode: ${responseBody.take(512)}")
+) : ModelRequestException(
+    "DeepSeek request failed with HTTP $statusCode: ${responseBody.take(512)}",
+    retryable = statusCode == 408 || statusCode == 429 || statusCode >= 500,
+)
 
 /** DeepSeek 响应不符合当前 Adapter 支持的协议。 */
 class DeepSeekProtocolException(
     detail: String,
     cause: Throwable? = null,
-) : IllegalStateException("invalid DeepSeek response: $detail", cause)
+) : ModelRequestException("invalid DeepSeek response: $detail", retryable = false, cause)
 
 /** DeepSeek 请求在收到 HTTP 响应前失败。 */
 class DeepSeekTransportException(
     cause: Throwable,
-) : IllegalStateException("DeepSeek request transport failed", cause)
+) : ModelRequestException("DeepSeek request transport failed", retryable = true, cause)
 
 /**
  * DeepSeek 非流式 Chat Completion Adapter。
@@ -80,6 +86,7 @@ class DeepSeekTransportException(
 class DeepSeekAdapter(
     private val config: DeepSeekConfig,
 ) : LanguageModel {
+    override val retryPolicy: ModelRetryPolicy = config.retryPolicy
     private val endpoint = URI(config.baseUri.toString().trimEnd('/') + "/chat/completions")
     private val client = HttpClient.newBuilder()
         .connectTimeout(config.connectTimeout)

@@ -1,5 +1,6 @@
 package com.attuchengmen.config
 
+import com.attuchengmen.agent.model.ModelRetryPolicy
 import org.snakeyaml.engine.v2.api.Load
 import org.snakeyaml.engine.v2.api.LoadSettings
 import java.net.URI
@@ -30,6 +31,7 @@ data class ModelConfig(
     val baseUri: URI,
     val connectTimeout: Duration,
     val requestTimeout: Duration,
+    val retryPolicy: ModelRetryPolicy,
 )
 
 /** YAML 配置无法安全映射为受支持的应用配置。 */
@@ -64,7 +66,10 @@ object AppConfigLoader {
             "base-url",
             "connect-timeout-seconds",
             "request-timeout-seconds",
+            "retry",
         )
+        val retry = model.child("retry")
+        retry.requireOnly("max-retries", "initial-delay-ms", "max-delay-ms")
         val session = root.child("session")
         session.requireOnly("path")
         val workspace = root.child("workspace")
@@ -82,6 +87,11 @@ object AppConfigLoader {
                 baseUri = model.uri("base-url"),
                 connectTimeout = Duration.ofSeconds(model.positiveLong("connect-timeout-seconds")),
                 requestTimeout = Duration.ofSeconds(model.positiveLong("request-timeout-seconds")),
+                retryPolicy = ModelRetryPolicy(
+                    maxRetries = retry.nonNegativeInt("max-retries"),
+                    initialDelay = Duration.ofMillis(retry.positiveLong("initial-delay-ms")),
+                    maxDelay = Duration.ofMillis(retry.positiveLong("max-delay-ms")),
+                ),
             ),
             agent = AgentConfig(
                 maxStepsPerTurn = agent.positiveInt("max-steps-per-turn"),
@@ -130,6 +140,17 @@ private class ConfigNode(
         val value = positiveLong(key)
         if (value > Int.MAX_VALUE) throw AppConfigException("$location.$key is too large")
         return value.toInt()
+    }
+
+    fun nonNegativeInt(key: String): Int {
+        val value = required(key)
+        val number = value as? Number
+            ?: throw AppConfigException("$location.$key must be a non-negative integer")
+        val result = number.toLong()
+        if (result < 0 || result > Int.MAX_VALUE || number.toDouble() != result.toDouble()) {
+            throw AppConfigException("$location.$key must be a non-negative integer")
+        }
+        return result.toInt()
     }
 
     fun uri(key: String): URI = try {
