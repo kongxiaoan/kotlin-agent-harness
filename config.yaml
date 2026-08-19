@@ -1,0 +1,18 @@
+model:
+  provider: deepseek
+  api-key-env: DEEPSEEK_API_KEY
+  model: deepseek-v4-flash
+  base-url: https://api.deepseek.com
+  connect-timeout-seconds: 10
+  request-timeout-seconds: 60
+
+agent:
+#可配置的 Turn 最大 Step 数，防止模型无限调用工具
+  max-steps-per-turn: 8
+
+session:
+  path: .runtime/session.jsonl
+
+workspace:
+  root: .
+  read-file-max-bytes: 1048576
