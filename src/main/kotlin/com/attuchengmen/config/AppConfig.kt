@@ -19,6 +19,7 @@ data class AppConfig(
 /** Agent Loop 的部署限制。 */
 data class AgentConfig(
     val maxStepsPerTurn: Int,
+    val turnTimeout: Duration,
 )
 
 /** 模型 Adapter 的部署配置；[apiKeyEnv] 是环境变量名而不是密钥。 */
@@ -69,7 +70,7 @@ object AppConfigLoader {
         val workspace = root.child("workspace")
         workspace.requireOnly("root", "read-file-max-bytes")
         val agent = root.child("agent")
-        agent.requireOnly("max-steps-per-turn")
+        agent.requireOnly("max-steps-per-turn", "turn-timeout-seconds")
 
         val configDirectory = path.toAbsolutePath().normalize().parent
             ?: throw AppConfigException("config path must have a parent directory")
@@ -84,6 +85,7 @@ object AppConfigLoader {
             ),
             agent = AgentConfig(
                 maxStepsPerTurn = agent.positiveInt("max-steps-per-turn"),
+                turnTimeout = Duration.ofSeconds(agent.positiveLong("turn-timeout-seconds")),
             ),
             sessionPath = resolvePath(configDirectory, session.string("path")),
             workspaceRoot = resolvePath(configDirectory, workspace.string("root")),

@@ -23,8 +23,14 @@ import com.attuchengmen.agent.session.ToolResultAdded
 import com.attuchengmen.agent.session.UserMessageAdded
 import com.attuchengmen.agent.tool.Tool
 import com.attuchengmen.agent.tool.ToolRegistry
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import java.time.Duration
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -37,7 +43,65 @@ import kotlin.test.assertFailsWith
  */
 class AgentTest {
     @Test
-    fun `submit sends projected session history to model and records its reply`() {
+    fun `turn timeout closes the active step with a distinct terminal outcome`() = runBlocking {
+        val session = Session()
+        val model = LanguageModel { awaitCancellation() }
+        val timeout = Duration.ofMillis(20)
+        val agent = Agent(
+            session,
+            model,
+            ToolRegistry(),
+            AgentOptions(maxStepsPerTurn = 8, turnTimeout = timeout),
+        )
+
+        val failure = assertFailsWith<TurnTimeoutExceededException> {
+            agent.submit("hello")
+        }
+
+        assertEquals(timeout, failure.timeout)
+        assertEquals(
+            listOf(
+                TurnStarted(turn = 1),
+                StepStarted(turn = 1, step = 1),
+                UserMessageAdded("hello"),
+                ModelRequestPrepared(turn = 1, step = 1, tools = emptyList()),
+                StepEnded(turn = 1, step = 1),
+                TurnEnded(turn = 1, outcome = TurnOutcome.TimedOut(timeout)),
+            ),
+            session.events,
+        )
+    }
+
+    @Test
+    fun `cancellation closes the active step and turn then remains cancellation`() = runBlocking {
+        val session = Session()
+        val modelStarted = CompletableDeferred<Unit>()
+        val model = LanguageModel {
+            modelStarted.complete(Unit)
+            awaitCancellation()
+        }
+        val agent = Agent(session, model, ToolRegistry(), TEST_OPTIONS)
+        val submission = async { agent.submit("hello") }
+
+        modelStarted.await()
+        submission.cancel()
+        assertFailsWith<CancellationException> { submission.await() }
+
+        assertEquals(
+            listOf(
+                TurnStarted(turn = 1),
+                StepStarted(turn = 1, step = 1),
+                UserMessageAdded("hello"),
+                ModelRequestPrepared(turn = 1, step = 1, tools = emptyList()),
+                StepEnded(turn = 1, step = 1),
+                TurnEnded(turn = 1, outcome = TurnOutcome.Cancelled),
+            ),
+            session.events,
+        )
+    }
+
+    @Test
+    fun `submit sends projected session history to model and records its reply`() = runBlocking {
         val session = Session().apply {
             append(UserMessageAdded("previous question"))
             append(AssistantMessageAdded("previous answer"))
@@ -74,7 +138,7 @@ class AgentTest {
     }
 
     @Test
-    fun `model failure remains visible and does not fabricate an assistant reply`() {
+    fun `model failure remains visible and does not fabricate an assistant reply`() = runBlocking {
         val session = Session()
         val failure = IllegalStateException("model unavailable")
         val model = LanguageModel { throw failure }
@@ -84,7 +148,8 @@ class AgentTest {
             agent.submit("hello")
         }
 
-        assertEquals(failure, thrown)
+        assertEquals(failure::class, thrown::class)
+        assertEquals(failure.message, thrown.message)
         assertEquals(
             listOf(
                 TurnStarted(turn = 1),
@@ -99,7 +164,7 @@ class AgentTest {
     }
 
     @Test
-    fun `each submission receives the next turn number`() {
+    fun `each submission receives the next turn number`() = runBlocking {
         val session = Session()
         val agent = Agent(
             session,
@@ -118,7 +183,7 @@ class AgentTest {
     }
 
     @Test
-    fun `tool request executes and its result drives the next step`() {
+    fun `tool request executes and its result drives the next step`() = runBlocking {
         val session = Session()
         val call = ToolCall(id = "call-1", name = "read_file", arguments = "{\"path\":\"README.md\"}")
         val model = RecordingModel(
@@ -173,7 +238,7 @@ class AgentTest {
     }
 
     @Test
-    fun `expected tool failure is returned to model for recovery`() {
+    fun `expected tool failure is returned to model for recovery`() = runBlocking {
         val session = Session()
         val call = ToolCall(id = "call-1", name = "missing", arguments = "{}")
         val model = RecordingModel(
@@ -197,7 +262,7 @@ class AgentTest {
     }
 
     @Test
-    fun `unexpected tool failure terminates turn without exposing exception detail`() {
+    fun `unexpected tool failure terminates turn without exposing exception detail`() = runBlocking {
         val session = Session()
         val call = ToolCall(id = "call-1", name = "broken", arguments = "{}")
         val model = RecordingModel(ModelResponse.ToolRequest(call))
@@ -208,7 +273,7 @@ class AgentTest {
                 parameters = buildJsonObject { put("type", "object") },
             )
 
-            override fun execute(arguments: String): String = error("database password leaked")
+            override suspend fun execute(arguments: String): String = error("database password leaked")
         }
         val agent = Agent(session, model, ToolRegistry(listOf(tool)), TEST_OPTIONS)
 
@@ -223,7 +288,7 @@ class AgentTest {
     }
 
     @Test
-    fun `step limit stops turn before another model request`() {
+    fun `step limit stops turn before another model request`() = runBlocking {
         val session = Session()
         val call = ToolCall(id = "call-1", name = "read_file", arguments = "{}")
         val model = RecordingModel(
@@ -235,7 +300,7 @@ class AgentTest {
             session,
             model,
             ToolRegistry(listOf(tool)),
-            AgentOptions(maxStepsPerTurn = 1),
+            AgentOptions(maxStepsPerTurn = 1, turnTimeout = Duration.ofSeconds(5)),
         )
 
         val failure = assertFailsWith<StepLimitExceededException> {
@@ -252,7 +317,10 @@ class AgentTest {
     }
 }
 
-private val TEST_OPTIONS = AgentOptions(maxStepsPerTurn = 8)
+private val TEST_OPTIONS = AgentOptions(
+    maxStepsPerTurn = 8,
+    turnTimeout = Duration.ofSeconds(5),
+)
 
 private class RecordingModel(
     vararg responses: ModelResponse,
@@ -260,7 +328,7 @@ private class RecordingModel(
     private val pendingResponses = ArrayDeque(responses.toList())
     val requests = mutableListOf<ModelRequest>()
 
-    override fun generate(request: ModelRequest): ModelResponse {
+    override suspend fun generate(request: ModelRequest): ModelResponse {
         requests.add(request)
         return pendingResponses.removeFirst()
     }
@@ -277,7 +345,7 @@ private class RecordingTool(
     )
     val arguments = mutableListOf<String>()
 
-    override fun execute(arguments: String): String {
+    override suspend fun execute(arguments: String): String {
         this.arguments.add(arguments)
         return result
     }

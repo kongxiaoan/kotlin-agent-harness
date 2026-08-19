@@ -13,6 +13,8 @@
 - 每次模型请求携带已注册工具的描述和参数 JSON Schema。
 - 模型请求边界和当时的工具定义写入 Session，可从日志重建准确请求。
 - 每个 Turn 有可配置的最大 Step 数，防止模型无限调用工具。
+- 模型与工具调用支持协程取消；取消会完整关闭当前 Step 和 Turn。
+- Turn 总超时可配置，超时与调用方取消使用不同终态。
 - `DeepSeekAdapter` 负责 DeepSeek 非流式 HTTP、鉴权和协议转换，Runtime 不依赖供应商。
 - 提供限制在工作区内、带大小上限的 `read_file` 工具。
 - 使用 SLF4J + Logback 输出运行日志，使用 kotlinx.serialization 处理 JSON。

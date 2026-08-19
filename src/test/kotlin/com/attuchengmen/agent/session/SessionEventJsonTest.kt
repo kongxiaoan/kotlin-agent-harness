@@ -4,6 +4,7 @@ import com.attuchengmen.agent.model.ToolCall
 import com.attuchengmen.agent.model.ToolDefinition
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import java.time.Duration
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -35,7 +36,9 @@ class SessionEventJsonTest {
             StepStarted(turn = 1, step = 2),
             StepEnded(turn = 1, step = 2),
             TurnEnded(turn = 1, outcome = TurnOutcome.Completed),
-            TurnEnded(turn = 2, outcome = TurnOutcome.Failed("model unavailable")),
+            TurnEnded(turn = 2, outcome = TurnOutcome.Cancelled),
+            TurnEnded(turn = 3, outcome = TurnOutcome.TimedOut(Duration.ofSeconds(30))),
+            TurnEnded(turn = 4, outcome = TurnOutcome.Failed("model unavailable")),
         )
 
         for (event in events) {

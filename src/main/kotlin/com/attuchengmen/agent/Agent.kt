@@ -19,13 +19,23 @@ import com.attuchengmen.agent.session.UserMessageAdded
 import com.attuchengmen.agent.tool.ToolRegistry
 import com.attuchengmen.agent.tool.ToolException
 import com.attuchengmen.agent.tool.UnexpectedToolException
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
+import java.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 
 /** Agent Loop 的部署级安全限制。 */
 data class AgentOptions(
     val maxStepsPerTurn: Int,
+    val turnTimeout: Duration,
 ) {
     init {
         require(maxStepsPerTurn > 0) { "maxStepsPerTurn must be positive" }
+        require(!turnTimeout.isZero && !turnTimeout.isNegative && turnTimeout.toMillis() > 0) {
+            "turnTimeout must be at least one millisecond"
+        }
     }
 }
 
@@ -36,13 +46,18 @@ class StepLimitExceededException(
     "turn exceeded configured maximum of $maxSteps ${if (maxSteps == 1) "step" else "steps"}",
 )
 
+/** 一个 Turn 未在部署配置允许的时间内完成。 */
+class TurnTimeoutExceededException(
+    val timeout: Duration,
+) : IllegalStateException("turn exceeded configured timeout of ${timeout.toMillis()} ms")
+
 /**
  * 阅读顺序 6：一次最小 Agent 交互的编排者。
  *
  * 该类不保存第二份消息历史。它先把用户输入记录为事实，再从 Session
  * 投影模型上下文，调用可替换的模型，并记录回复与 Turn 终态。
  *
- * 当前支持同步工具驱动的多 Step Turn；取消和异步执行尚未加入。
+ * 模型和工具调用可挂起；调用方取消时，当前 Step 与 Turn 仍会记录终态。
  */
 class Agent(
     private val session: Session,
@@ -50,34 +65,34 @@ class Agent(
     private val tools: ToolRegistry,
     private val options: AgentOptions,
 ) {
+    private val turnMutex = Mutex()
+
     /**
      * 提交用户内容并返回模型回复。
      *
      * 每次调用记录配对的 Turn 开始和终态。模型失败时异常继续传播，
      * 已记录的用户输入和失败终态保留，且不会追加不存在的 Assistant 回复。
      */
-    fun submit(content: String): AssistantMessage {
+    suspend fun submit(content: String): AssistantMessage = turnMutex.withLock {
+        runTurn(content)
+    }
+
+    /** 在已取得单 Turn 执行权后完成一次提交。 */
+    private suspend fun runTurn(content: String): AssistantMessage {
         val turn = nextTurnNumber()
         session.append(TurnStarted(turn))
         try {
-            var step = 1
-            var nextUserContent: String? = content
-            while (true) {
-                when (val result = runStep(turn, step, nextUserContent)) {
-                    is StepResult.Answer -> {
-                        session.append(TurnEnded(turn, TurnOutcome.Completed))
-                        return result.message
-                    }
-
-                    StepResult.Continue -> {
-                        if (step >= options.maxStepsPerTurn) {
-                            throw StepLimitExceededException(options.maxStepsPerTurn)
-                        }
-                        step += 1
-                        nextUserContent = null
-                    }
-                }
-            }
+            val message = withTimeoutOrNull(options.turnTimeout.toMillis().milliseconds) {
+                runSteps(turn, content)
+            } ?: throw TurnTimeoutExceededException(options.turnTimeout)
+            session.append(TurnEnded(turn, TurnOutcome.Completed))
+            return message
+        } catch (error: TurnTimeoutExceededException) {
+            session.append(TurnEnded(turn, TurnOutcome.TimedOut(error.timeout)))
+            throw error
+        } catch (error: CancellationException) {
+            session.append(TurnEnded(turn, TurnOutcome.Cancelled))
+            throw error
         } catch (error: Exception) {
             val message = error.message ?: error::class.simpleName ?: "unknown model failure"
             session.append(TurnEnded(turn, TurnOutcome.Failed(message)))
@@ -85,8 +100,26 @@ class Agent(
         }
     }
 
+    /** 持续执行 Step，直到得到答案或触发 Step 上限。 */
+    private suspend fun runSteps(turn: Int, content: String): AssistantMessage {
+        var step = 1
+        var nextUserContent: String? = content
+        while (true) {
+            when (val result = runStep(turn, step, nextUserContent)) {
+                is StepResult.Answer -> return result.message
+                StepResult.Continue -> {
+                    if (step >= options.maxStepsPerTurn) {
+                        throw StepLimitExceededException(options.maxStepsPerTurn)
+                    }
+                    step += 1
+                    nextUserContent = null
+                }
+            }
+        }
+    }
+
     /** 一个已开始的 Step 无论模型成功或失败都记录结束边界。 */
-    private fun runStep(turn: Int, step: Int, content: String?): StepResult {
+    private suspend fun runStep(turn: Int, step: Int, content: String?): StepResult {
         session.append(StepStarted(turn, step))
         try {
             if (content != null) session.append(UserMessageAdded(content))
@@ -116,6 +149,8 @@ class Agent(
                                 isError = true,
                             ),
                         )
+                    } catch (error: CancellationException) {
+                        throw error
                     } catch (error: Exception) {
                         session.append(
                             ToolResultAdded(

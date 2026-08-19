@@ -14,7 +14,7 @@ import com.attuchengmen.config.AppConfigLoader
 import java.nio.file.Path
 
 /** 从 YAML 和环境变量组装具体能力，并运行一次完整 Agent Turn。 */
-fun main(args: Array<String>) {
+suspend fun main(args: Array<String>) {
     val configPath = Path.of(System.getenv("DS_HARNESS_CONFIG") ?: "config.yaml")
     val config = AppConfigLoader.load(configPath)
     val task = args.joinToString(" ").ifBlank {
@@ -32,7 +32,10 @@ fun main(args: Array<String>) {
         session,
         model,
         tools,
-        AgentOptions(maxStepsPerTurn = config.agent.maxStepsPerTurn),
+        AgentOptions(
+            maxStepsPerTurn = config.agent.maxStepsPerTurn,
+            turnTimeout = config.agent.turnTimeout,
+        ),
     )
 
     println(agent.submit(task).content)

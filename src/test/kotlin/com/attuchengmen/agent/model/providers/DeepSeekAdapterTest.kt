@@ -21,6 +21,7 @@ import java.time.Duration
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlinx.coroutines.runBlocking
 
 class DeepSeekAdapterTest {
     @Test
@@ -36,7 +37,7 @@ class DeepSeekAdapterTest {
         )
         val adapter = DeepSeekAdapter(config(server))
 
-        val response = adapter.generate(
+        val response = runBlocking { adapter.generate(
             ModelRequest(
                 messages = listOf(
                     UserMessage("read it"),
@@ -45,7 +46,7 @@ class DeepSeekAdapterTest {
                 ),
                 tools = listOf(tool),
             ),
-        )
+        ) }
 
         assertEquals(ModelResponse.Answer(AssistantMessage("done")), response)
         assertEquals("Bearer test-key", received.authorization)
@@ -67,7 +68,9 @@ class DeepSeekAdapterTest {
     ) { server, _ ->
         val adapter = DeepSeekAdapter(config(server))
 
-        val response = adapter.generate(ModelRequest(listOf(UserMessage("read it")), emptyList()))
+        val response = runBlocking {
+            adapter.generate(ModelRequest(listOf(UserMessage("read it")), emptyList()))
+        }
 
         assertEquals(
             ModelResponse.ToolRequest(
@@ -84,7 +87,9 @@ class DeepSeekAdapterTest {
         responseBody = """{"error":{"message":"invalid credentials"}}""",
     ) { server, _ ->
         val failure = assertFailsWith<DeepSeekHttpException> {
-            DeepSeekAdapter(config(server)).generate(ModelRequest(listOf(UserMessage("hello")), emptyList()))
+            runBlocking {
+                DeepSeekAdapter(config(server)).generate(ModelRequest(listOf(UserMessage("hello")), emptyList()))
+            }
         }
 
         assertEquals(401, failure.statusCode)

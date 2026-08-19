@@ -2,6 +2,7 @@ package com.attuchengmen.agent.session
 
 import com.attuchengmen.agent.model.ToolCall
 import com.attuchengmen.agent.model.ToolDefinition
+import java.time.Duration
 
 /**
  * 阅读顺序 2：Session 中按发生顺序记录的运行事实。
@@ -78,6 +79,14 @@ data class StepEnded(
 sealed interface TurnOutcome {
     /** Turn 已正常产生模型回复。 */
     data object Completed : TurnOutcome
+
+    /** Turn 因调用方取消而结束；取消不是业务失败。 */
+    data object Cancelled : TurnOutcome
+
+    /** Turn 达到 Runtime 配置的总执行时间限制。 */
+    data class TimedOut(
+        val timeout: Duration,
+    ) : TurnOutcome
 
     /** Turn 因模型异常而结束。 */
     data class Failed(

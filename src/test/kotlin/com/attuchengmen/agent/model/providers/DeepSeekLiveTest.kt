@@ -9,6 +9,7 @@ import java.time.Duration
 import kotlin.test.Test
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
+import kotlinx.coroutines.runBlocking
 
 /** 仅在调用者显式提供 DeepSeek 凭据和模型时运行的真实 API 冒烟测试。 */
 class DeepSeekLiveTest {
@@ -28,12 +29,12 @@ class DeepSeekLiveTest {
             ),
         )
 
-        val response = adapter.generate(
+        val response = runBlocking { adapter.generate(
             ModelRequest(
                 messages = listOf(UserMessage("Reply with a short greeting.")),
                 tools = emptyList(),
             ),
-        )
+        ) }
 
         assertTrue(assertIs<ModelResponse.Answer>(response).message.content.isNotBlank())
     }

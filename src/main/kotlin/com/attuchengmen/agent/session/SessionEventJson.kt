@@ -8,6 +8,7 @@ import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import java.time.Duration
 
 /** JSON 文件边界使用的 SessionEvent 编解码器。 */
 internal object SessionEventJson {
@@ -103,6 +104,14 @@ private sealed interface StoredTurnOutcome
 private data object StoredCompleted : StoredTurnOutcome
 
 @Serializable
+@SerialName("cancelled")
+private data object StoredCancelled : StoredTurnOutcome
+
+@Serializable
+@SerialName("timed-out")
+private data class StoredTimedOut(val timeoutMillis: Long) : StoredTurnOutcome
+
+@Serializable
 @SerialName("failed")
 private data class StoredFailed(val message: String) : StoredTurnOutcome
 
@@ -128,6 +137,8 @@ private fun SessionEvent.toStored(): StoredSessionEvent = when (this) {
         turn = turn,
         outcome = when (val value = outcome) {
             TurnOutcome.Completed -> StoredCompleted
+            TurnOutcome.Cancelled -> StoredCancelled
+            is TurnOutcome.TimedOut -> StoredTimedOut(value.timeout.toMillis())
             is TurnOutcome.Failed -> StoredFailed(value.message)
         },
     )
@@ -155,6 +166,8 @@ private fun StoredSessionEvent.toDomain(): SessionEvent = when (this) {
         turn = turn,
         outcome = when (val value = outcome) {
             StoredCompleted -> TurnOutcome.Completed
+            StoredCancelled -> TurnOutcome.Cancelled
+            is StoredTimedOut -> TurnOutcome.TimedOut(Duration.ofMillis(value.timeoutMillis))
             is StoredFailed -> TurnOutcome.Failed(value.message)
         },
     )

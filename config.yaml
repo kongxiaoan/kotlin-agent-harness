@@ -7,8 +7,10 @@ model:
   request-timeout-seconds: 60
 
 agent:
-#可配置的 Turn 最大 Step 数，防止模型无限调用工具
+# 可配置的 Turn 最大 Step 数，防止模型无限调用工具
   max-steps-per-turn: 8
+# 包含所有模型和工具调用的 Turn 总超时
+  turn-timeout-seconds: 120
 
 session:
   path: .runtime/session.jsonl

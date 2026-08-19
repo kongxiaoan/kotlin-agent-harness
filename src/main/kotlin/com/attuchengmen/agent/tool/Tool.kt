@@ -2,12 +2,12 @@ package com.attuchengmen.agent.tool
 
 import com.attuchengmen.agent.model.ToolDefinition
 
-/** Agent Runtime 可以按名称调用的一项同步能力。 */
+/** Agent Runtime 可以按名称调用的一项能力。 */
 interface Tool {
     val definition: ToolDefinition
 
     /** 执行模型提供的原始 JSON 参数并返回模型可见文本。 */
-    fun execute(arguments: String): String
+    suspend fun execute(arguments: String): String
 }
 
 /** 可以安全返回给模型并允许其修正请求的工具错误。 */

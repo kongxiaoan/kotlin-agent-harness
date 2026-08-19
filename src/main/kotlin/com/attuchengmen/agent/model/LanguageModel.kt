@@ -11,5 +11,5 @@ fun interface LanguageModel {
      * 根据消息历史和可用工具定义生成最终答案或工具请求。
      * 模型失败直接抛出异常，由更高层决定恢复策略。
      */
-    fun generate(request: ModelRequest): ModelResponse
+    suspend fun generate(request: ModelRequest): ModelResponse
 }

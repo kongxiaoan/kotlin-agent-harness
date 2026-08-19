@@ -1,6 +1,7 @@
 package com.attuchengmen.config
 
 import java.nio.file.Files
+import java.time.Duration
 import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -23,6 +24,7 @@ class AppConfigLoaderTest {
             assertEquals(root, config.workspaceRoot)
             assertEquals(1_048_576, config.readFileMaxBytes)
             assertEquals(8, config.agent.maxStepsPerTurn)
+            assertEquals(Duration.ofSeconds(120), config.agent.turnTimeout)
         } finally {
             root.toFile().deleteRecursively()
         }
@@ -61,6 +63,7 @@ class AppConfigLoaderTest {
               read-file-max-bytes: 1048576
             agent:
               max-steps-per-turn: 8
+              turn-timeout-seconds: 120
         """.trimIndent()
     }
 }

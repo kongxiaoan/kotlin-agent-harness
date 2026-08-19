@@ -25,6 +25,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
+import kotlinx.coroutines.future.await
 import java.io.IOException
 import java.net.URI
 import java.net.http.HttpClient
@@ -84,7 +85,7 @@ class DeepSeekAdapter(
         .connectTimeout(config.connectTimeout)
         .build()
 
-    override fun generate(request: ModelRequest): ModelResponse {
+    override suspend fun generate(request: ModelRequest): ModelResponse {
         val httpRequest = HttpRequest.newBuilder(endpoint)
             .timeout(config.requestTimeout)
             .header("Authorization", "Bearer ${config.apiKey}")
@@ -92,10 +93,7 @@ class DeepSeekAdapter(
             .POST(HttpRequest.BodyPublishers.ofString(encodeRequest(request), UTF_8))
             .build()
         val response = try {
-            client.send(httpRequest, HttpResponse.BodyHandlers.ofString(UTF_8))
-        } catch (error: InterruptedException) {
-            Thread.currentThread().interrupt()
-            throw DeepSeekTransportException(error)
+            client.sendAsync(httpRequest, HttpResponse.BodyHandlers.ofString(UTF_8)).await()
         } catch (error: IOException) {
             throw DeepSeekTransportException(error)
         }

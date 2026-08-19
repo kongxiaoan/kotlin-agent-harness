@@ -4,7 +4,7 @@
 
 本项目最终实现一个可测试、可恢复、可扩展的 Kotlin Agent Runtime。它负责持续驱动模型与工具协作，并管理上下文、Session、执行状态、取消和错误；具体模型和业务工具由外部实现。
 
-当前阶段支持 DeepSeek 非流式模型、同步多 Step 工具执行、YAML 应用配置和 JSONL Session 持久化；没有协程和插件框架。
+当前阶段支持 DeepSeek 非流式模型、可取消的多 Step 工具执行、YAML 应用配置和 JSONL Session 持久化；没有流式输出和插件框架。
 
 ## 当前数据流
 
@@ -20,6 +20,10 @@ Agent.submit(content)
 ```
 
 如果模型调用失败，异常向调用者传播。用户输入已经成为运行事实，因此继续保留；系统不会伪造 Agent 回复。
+
+`Agent.submit` 是挂起函数。同一 Agent 的并发提交会串行执行，避免不同 Turn 的事件交错；调用方取消时，当前 Step 先记录结束，Turn 记录 `Cancelled`，随后原样传播 `CancellationException`。
+
+`AgentOptions.turnTimeout` 限制一个 Turn 内所有模型与工具调用的总时间。超时会先取消并等待当前 Step 清理，再记录 `TimedOut` 并抛出 `TurnTimeoutExceededException`；它与外部调用方取消是两个不同事实。
 
 ## 代码阅读顺序
 
@@ -69,7 +73,7 @@ Agent Runtime 只需要“完整请求产生一个结果”的能力，不应该
 
 ### Step 上限
 
-`AgentOptions.maxStepsPerTurn` 是应用层必须提供的部署配置。达到上限的 Step 会完整记录模型响应、工具调用、结果和 `StepEnded`；如果仍需要继续，Agent 在创建下一 Step 前抛出 `StepLimitExceededException` 并以失败终态关闭 Turn。
+`AgentOptions.maxStepsPerTurn` 和 `turnTimeout` 是应用层必须提供的部署配置。达到 Step 上限时，Agent 在创建下一 Step 前抛出 `StepLimitExceededException`；达到总时间限制时取消当前执行。两条路径都会先关闭当前 Step，再以明确终态关闭 Turn。
 
 ### SessionLog 与 JSONL
 
@@ -159,9 +163,9 @@ Problem
 
 ## 当前明确不做
 
-- Coroutine 与流式输出
+- 流式输出
 - 一个模型响应中的并行工具调用
-- 重试、超时和取消
+- Runtime 级重试策略
 - 插件系统和 Subagent
 
 这些会在核心行为出现真实需要时逐步加入，而不是提前设计。
