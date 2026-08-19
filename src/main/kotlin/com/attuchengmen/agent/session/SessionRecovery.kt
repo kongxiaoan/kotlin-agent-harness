@@ -39,6 +39,7 @@ object SessionRecovery {
                 is AssistantMessageAdded,
                 is ModelRequestPrepared,
                 is ModelRetryScheduled,
+                is ModelChunkReceived,
                 -> Unit
             }
         }

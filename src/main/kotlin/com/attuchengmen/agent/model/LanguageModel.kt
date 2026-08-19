@@ -1,5 +1,8 @@
 package com.attuchengmen.agent.model
 
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+
 /**
  * 阅读顺序 5：Agent Runtime 依赖的最小模型能力端口。
  *
@@ -16,4 +19,12 @@ fun interface LanguageModel {
      * 模型失败直接抛出异常，由更高层决定恢复策略。
      */
     suspend fun generate(request: ModelRequest): ModelResponse
+
+    /**
+     * 返回一个 attempt 的 chunk 流。
+     * 非流式 Provider 通过默认实现产生单个终态 chunk。
+     */
+    fun stream(request: ModelRequest): Flow<ModelChunk> = flow {
+        emit(ModelChunk.Finished(generate(request)))
+    }
 }

@@ -27,6 +27,7 @@ object SessionProjector {
                 is ToolResultAdded -> ToolResultMessage(event.callId, event.content, event.isError)
                 is ModelRequestPrepared -> null
                 is ModelRetryScheduled -> null
+                is ModelChunkReceived -> null
                 is TurnStarted -> null
                 is StepStarted -> null
                 is StepEnded -> null

@@ -1,5 +1,8 @@
 package com.attuchengmen.agent.session
 
+import com.attuchengmen.agent.message.AssistantMessage
+import com.attuchengmen.agent.model.ModelChunk
+import com.attuchengmen.agent.model.ModelResponse
 import com.attuchengmen.agent.model.ToolCall
 import com.attuchengmen.agent.model.ToolDefinition
 import kotlinx.serialization.json.buildJsonObject
@@ -33,6 +36,13 @@ class SessionEventJsonTest {
                 ),
             ),
             ModelRetryScheduled(1, 2, retry = 1, delayMillis = 500, failure = "busy"),
+            ModelChunkReceived(1, 2, attempt = 1, chunk = ModelChunk.TextDelta("hi")),
+            ModelChunkReceived(
+                1,
+                2,
+                attempt = 1,
+                chunk = ModelChunk.Finished(ModelResponse.Answer(AssistantMessage("hi"))),
+            ),
             TurnStarted(turn = 1),
             StepStarted(turn = 1, step = 2),
             StepEnded(turn = 1, step = 2),

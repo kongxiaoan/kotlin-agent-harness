@@ -2,10 +2,12 @@ package com.attuchengmen.agent
 
 import com.attuchengmen.agent.message.AssistantMessage
 import com.attuchengmen.agent.model.LanguageModel
+import com.attuchengmen.agent.model.ModelChunkAssembler
 import com.attuchengmen.agent.model.ModelRequest
 import com.attuchengmen.agent.model.ModelRequestException
 import com.attuchengmen.agent.model.ModelResponse
 import com.attuchengmen.agent.session.AssistantMessageAdded
+import com.attuchengmen.agent.session.ModelChunkReceived
 import com.attuchengmen.agent.session.ModelRequestPrepared
 import com.attuchengmen.agent.session.ModelRetryScheduled
 import com.attuchengmen.agent.session.Session
@@ -23,6 +25,7 @@ import com.attuchengmen.agent.tool.ToolException
 import com.attuchengmen.agent.tool.UnexpectedToolException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
@@ -85,7 +88,6 @@ class Agent(
         val turn = nextTurnNumber()
         session.append(TurnStarted(turn))
         try {
-            //最多允许 runSteps() 执行 options.turnTimeout.toMillis().milliseconds 秒
             val message = withTimeoutOrNull(options.turnTimeout.toMillis().milliseconds) {
                 runSteps(turn, content)
             } ?: throw TurnTimeoutExceededException(options.turnTimeout)
@@ -180,7 +182,12 @@ class Agent(
         while (true) {
             session.append(ModelRequestPrepared(turn, step, request.tools, attempt = retry + 1))
             try {
-                return model.generate(request)
+                val assembler = ModelChunkAssembler()
+                model.stream(request).collect { chunk ->
+                    session.append(ModelChunkReceived(turn, step, retry + 1, chunk))
+                    assembler.push(chunk)
+                }
+                return assembler.finish()
             } catch (error: CancellationException) {
                 throw error
             } catch (error: ModelRequestException) {

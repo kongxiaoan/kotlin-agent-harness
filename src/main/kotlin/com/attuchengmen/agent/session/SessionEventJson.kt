@@ -1,5 +1,8 @@
 package com.attuchengmen.agent.session
 
+import com.attuchengmen.agent.message.AssistantMessage
+import com.attuchengmen.agent.model.ModelChunk
+import com.attuchengmen.agent.model.ModelResponse
 import com.attuchengmen.agent.model.ToolCall
 import com.attuchengmen.agent.model.ToolDefinition
 import kotlinx.serialization.SerialName
@@ -75,6 +78,40 @@ private data class StoredModelRetryScheduled(
 ) : StoredSessionEvent
 
 @Serializable
+@SerialName("model-chunk-received")
+private data class StoredModelChunkReceived(
+    val turn: Int,
+    val step: Int,
+    val attempt: Int,
+    val chunk: StoredModelChunk,
+) : StoredSessionEvent
+
+@Serializable
+private sealed interface StoredModelChunk
+
+@Serializable
+@SerialName("text-delta")
+private data class StoredTextDelta(val text: String) : StoredModelChunk
+
+@Serializable
+@SerialName("finished")
+private data class StoredFinished(val response: StoredModelResponse) : StoredModelChunk
+
+@Serializable
+private sealed interface StoredModelResponse
+
+@Serializable
+@SerialName("answer")
+private data class StoredAnswer(val content: String) : StoredModelResponse
+
+@Serializable
+@SerialName("tool-request")
+private data class StoredToolRequest(
+    val call: StoredToolCall,
+    val content: String? = null,
+) : StoredModelResponse
+
+@Serializable
 private data class StoredToolDefinition(
     val name: String,
     val description: String,
@@ -147,6 +184,7 @@ private fun SessionEvent.toStored(): StoredSessionEvent = when (this) {
         attempt = attempt,
     )
     is ModelRetryScheduled -> StoredModelRetryScheduled(turn, step, retry, delayMillis, failure)
+    is ModelChunkReceived -> StoredModelChunkReceived(turn, step, attempt, chunk.toStored())
     is TurnStarted -> StoredTurnStarted(turn)
     is StepStarted -> StoredStepStarted(turn, step)
     is StepEnded -> StoredStepEnded(turn, step)
@@ -179,6 +217,7 @@ private fun StoredSessionEvent.toDomain(): SessionEvent = when (this) {
         attempt = attempt,
     )
     is StoredModelRetryScheduled -> ModelRetryScheduled(turn, step, retry, delayMillis, failure)
+    is StoredModelChunkReceived -> ModelChunkReceived(turn, step, attempt, chunk.toDomain())
     is StoredTurnStarted -> TurnStarted(turn)
     is StoredStepStarted -> StepStarted(turn, step)
     is StoredStepEnded -> StepEnded(turn, step)
@@ -191,5 +230,31 @@ private fun StoredSessionEvent.toDomain(): SessionEvent = when (this) {
             is StoredTimedOut -> TurnOutcome.TimedOut(Duration.ofMillis(value.timeoutMillis))
             is StoredFailed -> TurnOutcome.Failed(value.message)
         },
+    )
+}
+
+private fun ModelChunk.toStored(): StoredModelChunk = when (this) {
+    is ModelChunk.TextDelta -> StoredTextDelta(text)
+    is ModelChunk.Finished -> StoredFinished(response.toStored())
+}
+
+private fun StoredModelChunk.toDomain(): ModelChunk = when (this) {
+    is StoredTextDelta -> ModelChunk.TextDelta(text)
+    is StoredFinished -> ModelChunk.Finished(response.toDomain())
+}
+
+private fun ModelResponse.toStored(): StoredModelResponse = when (this) {
+    is ModelResponse.Answer -> StoredAnswer(message.content)
+    is ModelResponse.ToolRequest -> StoredToolRequest(
+        call = StoredToolCall(call.id, call.name, call.arguments),
+        content = content,
+    )
+}
+
+private fun StoredModelResponse.toDomain(): ModelResponse = when (this) {
+    is StoredAnswer -> ModelResponse.Answer(AssistantMessage(content))
+    is StoredToolRequest -> ModelResponse.ToolRequest(
+        call = ToolCall(call.id, call.name, call.arguments),
+        content = content,
     )
 }

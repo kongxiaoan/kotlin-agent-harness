@@ -2,6 +2,7 @@ package com.attuchengmen.agent.session
 
 import com.attuchengmen.agent.model.ToolCall
 import com.attuchengmen.agent.model.ToolDefinition
+import com.attuchengmen.agent.model.ModelChunk
 import java.time.Duration
 
 /**
@@ -58,6 +59,14 @@ data class ModelRetryScheduled(
     val retry: Int,
     val delayMillis: Long,
     val failure: String,
+) : SessionEvent
+
+/** Provider 为一个模型请求 attempt 产生的原始流事件。 */
+data class ModelChunkReceived(
+    val turn: Int,
+    val step: Int,
+    val attempt: Int,
+    val chunk: ModelChunk,
 ) : SessionEvent
 
 /**

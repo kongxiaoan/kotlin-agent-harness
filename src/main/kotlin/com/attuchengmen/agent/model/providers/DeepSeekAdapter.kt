@@ -6,18 +6,27 @@ import com.attuchengmen.agent.message.ToolCallMessage
 import com.attuchengmen.agent.message.ToolResultMessage
 import com.attuchengmen.agent.message.UserMessage
 import com.attuchengmen.agent.model.LanguageModel
+import com.attuchengmen.agent.model.ModelChunk
 import com.attuchengmen.agent.model.ModelRequest
 import com.attuchengmen.agent.model.ModelRequestException
 import com.attuchengmen.agent.model.ModelResponse
 import com.attuchengmen.agent.model.ModelRetryPolicy
 import com.attuchengmen.agent.model.ToolCall
 import com.attuchengmen.agent.model.ToolDefinition
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.future.await
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -27,7 +36,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
-import kotlinx.coroutines.future.await
+import java.io.BufferedReader
 import java.io.IOException
 import java.net.URI
 import java.net.http.HttpClient
@@ -78,7 +87,7 @@ class DeepSeekTransportException(
 ) : ModelRequestException("DeepSeek request transport failed", retryable = true, cause)
 
 /**
- * DeepSeek 非流式 Chat Completion Adapter。
+ * DeepSeek Chat Completion Adapter。
  *
  * 当前显式关闭 thinking，并只接受一个工具调用；Runtime 只依赖
  * [LanguageModel]，不感知 DeepSeek 的鉴权、URL 或 JSON DTO。
@@ -93,12 +102,7 @@ class DeepSeekAdapter(
         .build()
 
     override suspend fun generate(request: ModelRequest): ModelResponse {
-        val httpRequest = HttpRequest.newBuilder(endpoint)
-            .timeout(config.requestTimeout)
-            .header("Authorization", "Bearer ${config.apiKey}")
-            .header("Content-Type", "application/json")
-            .POST(HttpRequest.BodyPublishers.ofString(encodeRequest(request), UTF_8))
-            .build()
+        val httpRequest = createRequest(request, stream = false)
         val response = try {
             client.sendAsync(httpRequest, HttpResponse.BodyHandlers.ofString(UTF_8)).await()
         } catch (error: IOException) {
@@ -110,9 +114,64 @@ class DeepSeekAdapter(
         return decodeResponse(response.body())
     }
 
-    private fun encodeRequest(request: ModelRequest): String {
+    override fun stream(request: ModelRequest): Flow<ModelChunk> {
+        if (request.tools.isNotEmpty()) {
+            return flow { emit(ModelChunk.Finished(generate(request))) }
+        }
+        return streamText(request)
+    }
+
+    /** 文本专用 SSE 路径；工具请求在支持增量组装前使用非流式路径。 */
+    private fun streamText(request: ModelRequest): Flow<ModelChunk> = flow {
+        val response = try {
+            client.sendAsync(createRequest(request, stream = true), HttpResponse.BodyHandlers.ofInputStream()).await()
+        } catch (error: IOException) {
+            throw DeepSeekTransportException(error)
+        }
+        if (response.statusCode() !in 200..299) {
+            val summary = response.body().bufferedReader(UTF_8).use { it.readText().take(512) }
+            throw DeepSeekHttpException(response.statusCode(), summary)
+        }
+
+        val text = StringBuilder()
+        response.body().bufferedReader(UTF_8).use { reader ->
+            val events = DeepSeekSseReader(reader)
+            while (true) {
+                currentCoroutineContext().ensureActive()
+                val payload = try {
+                    events.nextData()
+                } catch (error: IOException) {
+                    throw DeepSeekTransportException(error)
+                } ?: throw DeepSeekTransportException(IOException("SSE stream ended without [DONE]"))
+                if (payload == "[DONE]") {
+                    if (text.isEmpty()) {
+                        throw ModelRequestException("DeepSeek stream produced no content", retryable = true)
+                    }
+                    emit(ModelChunk.Finished(ModelResponse.Answer(AssistantMessage(text.toString()))))
+                    return@flow
+                }
+                val chunk = decodeStreamChunk(payload)
+                if (chunk != null) {
+                    text.append(chunk)
+                    emit(ModelChunk.TextDelta(chunk))
+                }
+            }
+        }
+    }.flowOn(Dispatchers.IO)
+
+    private fun createRequest(request: ModelRequest, stream: Boolean): HttpRequest =
+        HttpRequest.newBuilder(endpoint)
+            .timeout(config.requestTimeout)
+            .header("Authorization", "Bearer ${config.apiKey}")
+            .header("Content-Type", "application/json")
+            .header("Accept", if (stream) "text/event-stream" else "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(encodeRequest(request, stream), UTF_8))
+            .build()
+
+    private fun encodeRequest(request: ModelRequest, stream: Boolean): String {
         val body = buildJsonObject {
             put("model", config.model)
+            put("stream", stream)
             putJsonObject("thinking") { put("type", "disabled") }
             putJsonArray("messages") {
                 request.messages.forEach { add(toDeepSeekMessage(it)) }
@@ -124,6 +183,23 @@ class DeepSeekAdapter(
             }
         }
         return json.encodeToString(JsonObject.serializer(), body)
+    }
+
+    private fun decodeStreamChunk(payload: String): String? {
+        val response = try {
+            json.decodeFromString<DeepSeekStreamResponse>(payload)
+        } catch (error: SerializationException) {
+            throw DeepSeekProtocolException("SSE data is not valid JSON", error)
+        }
+        if (response.choices.isEmpty()) return null
+        if (response.choices.size != 1) {
+            throw DeepSeekProtocolException("expected one streaming choice, found ${response.choices.size}")
+        }
+        val delta = response.choices.single().delta
+        if (delta.toolCalls != null && delta.toolCalls !is JsonNull) {
+            throw DeepSeekProtocolException("streaming tool calls are not supported yet")
+        }
+        return delta.content?.takeIf { it.isNotEmpty() }
     }
 
     private fun decodeResponse(body: String): ModelResponse {
@@ -236,3 +312,41 @@ private data class DeepSeekFunctionCall(
     val name: String,
     val arguments: String,
 )
+
+@Serializable
+private data class DeepSeekStreamResponse(
+    val choices: List<DeepSeekStreamChoice> = emptyList(),
+)
+
+@Serializable
+private data class DeepSeekStreamChoice(
+    val delta: DeepSeekDelta,
+)
+
+@Serializable
+private data class DeepSeekDelta(
+    val content: String? = null,
+    @SerialName("tool_calls") val toolCalls: JsonElement? = null,
+)
+
+/** 按 SSE 空行边界读取 `data:` 字段；网络分片由 BufferedReader 处理。 */
+private class DeepSeekSseReader(
+    private val reader: BufferedReader,
+) {
+    fun nextData(): String? {
+        val data = mutableListOf<String>()
+        while (true) {
+            val line = reader.readLine() ?: return null
+            if (line.isEmpty()) {
+                if (data.isNotEmpty()) return data.joinToString("\n")
+                continue
+            }
+            if (line.startsWith(":")) continue
+            if (line == "data") {
+                data.add("")
+            } else if (line.startsWith("data:")) {
+                data.add(line.removePrefix("data:").removePrefix(" "))
+            }
+        }
+    }
+}

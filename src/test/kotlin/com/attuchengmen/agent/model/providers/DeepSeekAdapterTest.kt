@@ -4,12 +4,15 @@ import com.attuchengmen.agent.message.AssistantMessage
 import com.attuchengmen.agent.message.ToolCallMessage
 import com.attuchengmen.agent.message.ToolResultMessage
 import com.attuchengmen.agent.message.UserMessage
+import com.attuchengmen.agent.model.ModelChunk
 import com.attuchengmen.agent.model.ModelRequest
 import com.attuchengmen.agent.model.ModelResponse
 import com.attuchengmen.agent.model.ModelRetryPolicy
 import com.attuchengmen.agent.model.ToolCall
 import com.attuchengmen.agent.model.ToolDefinition
 import com.sun.net.httpserver.HttpServer
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
@@ -24,9 +27,78 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
-import kotlinx.coroutines.runBlocking
 
 class DeepSeekAdapterTest {
+    @Test
+    fun `stream ending without done is a retryable transport failure`() = withServer(
+        responseStatus = 200,
+        responseBody = "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n",
+    ) { server, _ ->
+        val failure = assertFailsWith<DeepSeekTransportException> {
+            runBlocking {
+                DeepSeekAdapter(config(server))
+                    .stream(ModelRequest(listOf(UserMessage("hello")), emptyList()))
+                    .toList()
+            }
+        }
+
+        assertTrue(failure.retryable)
+    }
+
+    @Test
+    fun `requests with tools retain the non-streaming tool-capable path`() = withServer(
+        responseStatus = 200,
+        responseBody = """{"choices":[{"message":{"role":"assistant","content":"done"}}]}""",
+    ) { server, received ->
+        val tool = ToolDefinition(
+            name = "read_file",
+            description = "Read a file.",
+            parameters = buildJsonObject { put("type", "object") },
+        )
+
+        val chunks = runBlocking {
+            DeepSeekAdapter(config(server))
+                .stream(ModelRequest(listOf(UserMessage("hello")), listOf(tool)))
+                .toList()
+        }
+
+        assertEquals(
+            listOf(ModelChunk.Finished(ModelResponse.Answer(AssistantMessage("done")))),
+            chunks,
+        )
+        assertTrue(received.body.contains("\"stream\":false"))
+    }
+
+    @Test
+    fun `streams text deltas and assembles the terminal answer`() = withServer(
+        responseStatus = 200,
+        responseBody = listOf(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hel\"},\"finish_reason\":null}]}",
+            "",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"lo\"},\"finish_reason\":\"stop\"}]}",
+            "",
+            "data: [DONE]",
+            "",
+            "",
+        ).joinToString("\n"),
+    ) { server, received ->
+        val chunks = runBlocking {
+            DeepSeekAdapter(config(server))
+                .stream(ModelRequest(listOf(UserMessage("hello")), emptyList()))
+                .toList()
+        }
+
+        assertEquals(
+            listOf(
+                ModelChunk.TextDelta("hel"),
+                ModelChunk.TextDelta("lo"),
+                ModelChunk.Finished(ModelResponse.Answer(AssistantMessage("hello"))),
+            ),
+            chunks,
+        )
+        assertTrue(received.body.contains("\"stream\":true"))
+    }
+
     @Test
     fun `http failure classification only retries transient statuses`() {
         assertTrue(DeepSeekHttpException(429, "busy").retryable)

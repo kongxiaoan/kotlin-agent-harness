@@ -9,11 +9,13 @@ import com.attuchengmen.agent.model.ModelRequest
 import com.attuchengmen.agent.model.ModelRequestException
 import com.attuchengmen.agent.model.ModelResponse
 import com.attuchengmen.agent.model.ModelRetryPolicy
+import com.attuchengmen.agent.model.ModelChunk
 import com.attuchengmen.agent.model.ToolCall
 import com.attuchengmen.agent.model.ToolDefinition
 import com.attuchengmen.agent.session.AssistantMessageAdded
 import com.attuchengmen.agent.session.ModelRequestPrepared
 import com.attuchengmen.agent.session.ModelRetryScheduled
+import com.attuchengmen.agent.session.ModelChunkReceived
 import com.attuchengmen.agent.session.Session
 import com.attuchengmen.agent.session.SessionProjector
 import com.attuchengmen.agent.session.StepEnded
@@ -32,6 +34,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.yield
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.time.Duration
@@ -46,6 +49,40 @@ import kotlin.test.assertFailsWith
  * 异常不会被吞掉，也不会在 Session 中产生虚假回复。
  */
 class AgentTest {
+    @Test
+    fun `stream chunks are logged and assembled into one assistant answer`() = runBlocking {
+        val session = Session()
+        val model = object : LanguageModel {
+            override suspend fun generate(request: ModelRequest): ModelResponse =
+                error("stream should be used")
+
+            override fun stream(request: ModelRequest) = flowOf(
+                ModelChunk.TextDelta("hel"),
+                ModelChunk.TextDelta("lo"),
+                ModelChunk.Finished(ModelResponse.Answer(AssistantMessage("hello"))),
+            )
+        }
+        val agent = Agent(session, model, ToolRegistry(), TEST_OPTIONS)
+
+        val reply = agent.submit("greet me")
+
+        assertEquals(AssistantMessage("hello"), reply)
+        assertEquals(
+            listOf(
+                ModelChunkReceived(1, 1, attempt = 1, chunk = ModelChunk.TextDelta("hel")),
+                ModelChunkReceived(1, 1, attempt = 1, chunk = ModelChunk.TextDelta("lo")),
+                ModelChunkReceived(
+                    1,
+                    1,
+                    attempt = 1,
+                    chunk = ModelChunk.Finished(ModelResponse.Answer(AssistantMessage("hello"))),
+                ),
+            ),
+            session.events.filterIsInstance<ModelChunkReceived>(),
+        )
+        assertEquals(listOf(AssistantMessageAdded("hello")), session.events.filterIsInstance<AssistantMessageAdded>())
+    }
+
     @Test
     fun `retryable model failure retries inside the same step`() = runBlocking {
         val session = Session()
@@ -210,6 +247,12 @@ class AgentTest {
                 StepStarted(turn = 1, step = 1),
                 UserMessageAdded("current question"),
                 ModelRequestPrepared(turn = 1, step = 1, tools = emptyList()),
+                ModelChunkReceived(
+                    turn = 1,
+                    step = 1,
+                    attempt = 1,
+                    chunk = ModelChunk.Finished(ModelResponse.Answer(AssistantMessage("current answer"))),
+                ),
                 AssistantMessageAdded("current answer"),
                 StepEnded(turn = 1, step = 1),
                 TurnEnded(turn = 1, outcome = TurnOutcome.Completed),
@@ -298,6 +341,12 @@ class AgentTest {
                 StepStarted(turn = 1, step = 1),
                 UserMessageAdded("read the readme"),
                 ModelRequestPrepared(turn = 1, step = 1, tools = listOf(tool.definition)),
+                ModelChunkReceived(
+                    turn = 1,
+                    step = 1,
+                    attempt = 1,
+                    chunk = ModelChunk.Finished(ModelResponse.ToolRequest(call, content = "I will read it.")),
+                ),
                 ToolCallRequested(turn = 1, step = 1, call = call, content = "I will read it."),
                 ToolResultAdded(
                     turn = 1,
@@ -309,6 +358,14 @@ class AgentTest {
                 StepEnded(turn = 1, step = 1),
                 StepStarted(turn = 1, step = 2),
                 ModelRequestPrepared(turn = 1, step = 2, tools = listOf(tool.definition)),
+                ModelChunkReceived(
+                    turn = 1,
+                    step = 2,
+                    attempt = 1,
+                    chunk = ModelChunk.Finished(
+                        ModelResponse.Answer(AssistantMessage("the project is a Kotlin agent runtime")),
+                    ),
+                ),
                 AssistantMessageAdded("the project is a Kotlin agent runtime"),
                 StepEnded(turn = 1, step = 2),
                 TurnEnded(turn = 1, outcome = TurnOutcome.Completed),

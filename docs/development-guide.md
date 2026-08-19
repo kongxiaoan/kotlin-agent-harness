@@ -4,7 +4,7 @@
 
 本项目最终实现一个可测试、可恢复、可扩展的 Kotlin Agent Runtime。它负责持续驱动模型与工具协作，并管理上下文、Session、执行状态、取消和错误；具体模型和业务工具由外部实现。
 
-当前阶段支持 DeepSeek 非流式模型、可取消的多 Step 工具执行、YAML 应用配置和 JSONL Session 持久化；没有流式输出和插件框架。
+当前阶段支持 DeepSeek 文本 SSE、可取消的多 Step 工具执行、YAML 应用配置和 JSONL Session 持久化；工具调用仍使用非流式响应，也没有插件框架。
 
 ## 当前数据流
 
@@ -26,6 +26,8 @@ Agent.submit(content)
 `AgentOptions.turnTimeout` 限制一个 Turn 内所有模型与工具调用的总时间。超时会先取消并等待当前 Step 清理，再记录 `TimedOut` 并抛出 `TurnTimeoutExceededException`；它与外部调用方取消是两个不同事实。
 
 模型重试遵循 Harness 的请求恢复语义：重试仍发生在原 Turn 和原 Step 内。策略由模型 Provider 通过 `LanguageModel.retryPolicy` 提供；Runtime 只处理 `ModelRequestException(retryable = true)`，达到上限后传播最后一次失败。每次请求都有递增 `attempt` 的 `ModelRequestPrepared`，等待计划记录为 `ModelRetryScheduled`，因此恢复和观测不依赖内存计数。工具异常、协议错误、鉴权错误和普通 4xx 不会被重试。
+
+模型调用统一经过 `LanguageModel.stream`。每个原始 `ModelChunk` 先记录为不进入消息投影的 `ModelChunkReceived`，再交给 `ModelChunkAssembler` 验证并生成唯一的最终 `ModelResponse`；只有最终响应会产生 `AssistantMessageAdded` 或 `ToolCallRequested`。非流式 Provider 使用默认实现把 `generate` 结果包装成一个 `Finished` chunk。DeepSeek 的无工具请求使用 SSE；存在工具定义时明确降级到非流式路径，避免丢失尚未支持组装的工具调用增量。
 
 ## 代码阅读顺序
 
@@ -66,7 +68,7 @@ Message List     = 可重新计算的投影
 
 Agent Runtime 只需要“完整请求产生一个结果”的能力，不应该依赖具体供应商。`ModelRequest` 同时携带消息历史和工具定义；测试可以使用 Fake Model，未来的 HTTP Provider 也实现同一个端口。当前只有一个真实需求，因此没有 Factory、Provider Registry 或依赖注入框架。
 
-`DeepSeekAdapter` 是当前第一个真实实现。它独立拥有 URL、Bearer 鉴权、模型名、超时、DeepSeek JSON DTO 和 HTTP/协议异常；这些内容不会进入 `Agent`。当前显式关闭 thinking，因为 Session 尚未保存 reasoning content；只支持非流式响应和单个工具调用，多工具响应会明确失败。
+`DeepSeekAdapter` 是当前第一个真实实现。它独立拥有 URL、Bearer 鉴权、模型名、超时、DeepSeek JSON DTO、SSE 解析和 HTTP/协议异常；这些内容不会进入 `Agent`。当前显式关闭 thinking，因为 Session 尚未保存 reasoning content；文本 SSE 必须以 `[DONE]` 结束，工具路径只支持非流式单调用，多工具响应会明确失败。
 
 ### 工具定义
 
@@ -168,7 +170,7 @@ Problem
 
 ## 当前明确不做
 
-- 流式输出
+- DeepSeek 流式工具调用和面向终端的实时增量输出
 - 一个模型响应中的并行工具调用
 - Retry-After、随机抖动和无限重试模式
 - 插件系统和 Subagent
