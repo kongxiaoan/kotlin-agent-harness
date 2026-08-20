@@ -75,12 +75,14 @@ Agent（Turn / Step 编排）
   │                         └── ReadFileTool
   └── Session ───────────> SessionLog
                             ├── InMemorySessionLog
-                            └── JsonlFileSessionLog
+                            ├── JsonlFileSessionLog
+                            └── EventStoreSessionLog ──> SessionEventStore
+                                                        └── InMemorySessionEventStore
 
-SessionEvent ──> 恢复 / 消息投影 / 实时展示 / Token Usage 统计
+SessionEventEnvelope ──> 恢复 / 消息投影 / 游标回放 / 实时展示 / Token Usage 统计
 ```
 
-核心依赖方向是：`AgentRuntimeService` 管理多个 Agent 的生命周期；`Agent` 依赖 `LanguageModel`，并通过 `Session` 使用 `SessionLog` 存储接口，不依赖 DeepSeek、JSONL 或终端。具体 Provider、存储和展示在应用组装层接入。
+核心依赖方向是：`AgentRuntimeService` 管理多个 Agent 的生命周期；`Agent` 依赖 `LanguageModel`，并通过 `Session` 使用单 Session 的 `SessionLog`，不依赖 DeepSeek、JSONL、中心化 Event Store 或终端。具体 Provider、存储和展示在应用组装层接入。
 
 ## 一次执行的层级
 
@@ -138,8 +140,10 @@ Turn 1
 | `Agent` | 驱动 Turn、Step、模型和工具，不保存第二份消息历史 |
 | `AgentRuntimeService` | 分配 Session/Run ID，管理异步执行、并发和取消 |
 | `SessionEvent` | 定义已经发生且需要审计的运行事实 |
+| `SessionEventEnvelope` | 保存事实所属 Session、连续序号和发生时间 |
 | `Session` | 提供事实追加、稳定快照和实时事件发布 |
 | `SessionLog` | 定义事件存储接口；内存和 JSONL 是不同实现 |
+| `SessionEventStore` | 定义多 Session 创建、游标读取和带乐观并发校验的追加 |
 | `SessionProjector` | 从事实日志计算模型可见消息和历史请求 |
 | `SessionRecovery` | 用追加事件关闭崩溃遗留的开放执行 |
 | `LanguageModel` | 隔离 Runtime 与具体模型 Provider |
@@ -151,14 +155,14 @@ Turn 1
 
 ### 1. 事实和视图分离
 
-`SessionEvent` 是事实源，`Message List` 是给模型使用的投影。生命周期、重试和 Usage 需要保存，但不能全部发送给模型。
+`SessionEventEnvelope` 是持久化事实源，内部的 `SessionEvent` 描述发生了什么；`Message List` 是给模型使用的投影。生命周期、重试和 Usage 需要保存，但不能全部发送给模型。
 
 ```text
 SessionEvent Log = 不可随意改写的运行事实
 Message List     = 可以重新计算的模型上下文
 ```
 
-这属于 Event Sourcing 和 Projection 的简化应用。它提供审计、恢复、请求重建和多种统计视图，但未来接入数据库时仍需补充事件序号、Session ID 和并发控制。
+这属于 Event Sourcing 和 Projection 的简化应用。它提供审计、恢复、请求重建和多种统计视图；数据库实现必须保持现有 Session ID、连续序号和 `expectedSequence` 原子校验语义。
 
 ### 2. 核心依赖能力接口
 
@@ -190,13 +194,15 @@ LLM 只能生成决策；Tool 才能读取文件或操作外部系统。工具�
 
 - `AgentRuntimeService` 可以在单进程内管理多个 Session 和可查询、可取消的异步 Run。
 - 同一 Session 拒绝并发 Run，不同 Session 可以并行执行。
-- JSONL 支持单进程持久化和崩溃尾部修复。
+- 事件信封包含 Session ID、连续 sequence 和 occurredAt，支持按游标回放。
+- 多 Session Event Store 端口已定义创建、游标读取和乐观并发追加，并有进程内参考实现。
+- JSONL 支持信封持久化、顺序校验和崩溃尾部修复。
 - 当前只支持单个工具调用，不支持并行工具调用。
 - Run 状态仍在内存中，当前没有 HTTP API、数据库事务、身份认证和租户隔离。
 - `read_file` 有工作区限制，但还不是面向不可信远程用户的完整工具沙箱。
 - Token Usage 是运行计量事实，不等同于最终账单系统。
 
-下一阶段应把 Session Event 放入带事件序号的多 Session 持久化存储，再让 Ktor 或其他 Web 框架作为传输适配器调用现有应用服务。HTTP Handler 不应直接拥有 Agent Loop。
+下一阶段应实现 PostgreSQL `SessionEventStore`，在数据库事务中落实 `expectedSequence` 校验和 `(sessionId, sequence)` 唯一约束；之后再让 Ktor 作为传输适配器调用现有应用服务。HTTP Handler 不应直接拥有 Agent Loop。
 
 ## 面试 Agent 工程师时怎样介绍
 
@@ -224,7 +230,7 @@ LLM 只能生成决策；Tool 才能读取文件或操作外部系统。工具�
 >
 > 模型通过 LanguageModel 接口接入，当前适配 DeepSeek 的 SSE；工具通过 ToolRegistry 注册，参数在工具边界校验。模型请求失败时，只有 Provider 明确标记为瞬时失败才在同一个 Step 内产生新 Attempt；工具调用导致下一次模型决策时才产生新 Step。Runtime 还区分调用方取消、Turn 超时、模型失败、输出截断和崩溃中断，因为这些状态的恢复和计费语义不同。
 >
-> 持久化目前有内存和 JSONL 实现，开放 Turn 可以通过追加补偿事件修复；Provider 返回的 Usage、模型身份和价格快照也会写入 Session，用于统计缓存率、重试浪费和成本。我参考了成熟 Agent Harness 的职责划分和失败语义，但在 Kotlin 中独立完成领域建模、协程生命周期、Provider 适配和测试。当前它是单进程 Runtime 内核，还没有把 HTTP、多 Session 数据库、认证和租户隔离说成已完成；下一阶段会先增加应用服务层，再接入 Ktor。
+> 持久化目前有内存和 JSONL 实现，每条事实带 Session ID、连续序号和发生时间，开放 Turn 可以通过追加补偿事件修复；Provider 返回的 Usage、模型身份和价格快照也会写入 Session，用于统计缓存率、重试浪费和成本。我参考了成熟 Agent Harness 的职责划分和失败语义，但在 Kotlin 中独立完成领域建模、协程生命周期、Provider 适配和测试。当前已经有进程内多 Session/Run 应用服务，但还没有把数据库 Event Store、HTTP、认证和租户隔离说成已完成。
 
 ### 简历项目描述
 
@@ -278,11 +284,11 @@ Runtime 最清楚每个模型请求的 Turn、Step、Attempt、模型身份和�
 
 ### 这个项目现在能直接商用吗？
 
-它已经具备本地 Agent Runtime 的主要执行能力，但不是完整商用 Agent System。还需要多 Session 应用服务、数据库事务、HTTP 异步 Run 协议、幂等、认证授权、租户隔离、工具沙箱、限流和生产监控。
+它已经具备本地 Agent Runtime 的主要执行能力，但不是完整商用 Agent System。还需要数据库事务、HTTP 异步 Run 协议、幂等、认证授权、租户隔离、工具沙箱、限流和生产监控。
 
 ### 如果并发扩大十倍，最先改哪里？
 
-当前 JSONL 和进程内 `Mutex` 只适合单进程实例。首先要引入带 Session ID 和单调事件序号的数据库存储，再用事务、乐观锁或租约保证同一个 Session 只有一个执行者；HTTP 请求生命周期也必须与 Run 执行生命周期分离。
+当前 JSONL、内存 Event Store 和进程内 `Mutex` 只适合单进程实例。首先用 PostgreSQL 实现现有 `SessionEventStore`，通过事务和唯一约束落实乐观并发；再用租约协调同一 Session 的跨实例执行权。HTTP 请求生命周期也必须与 Run 执行生命周期分离。
 
 ## 对外介绍模板
 

@@ -29,8 +29,12 @@ suspend fun main(args: Array<String>) {
     val tools = ToolRegistry(
         listOf(ReadFileTool(config.workspaceRoot, config.readFileMaxBytes)),
     )
+    val sessionLog = JsonlFileSessionLog(config.sessionPath)
     val runtime = AgentRuntimeService(
-        sessionFactory = { Session(JsonlFileSessionLog(config.sessionPath)) },
+        sessionFactory = { sessionId ->
+            require(sessionLog.sessionId == sessionId) { "CLI session id does not match persisted log" }
+            Session(sessionLog)
+        },
         agentFactory = { session ->
             Agent(
                 session,
@@ -44,7 +48,7 @@ suspend fun main(args: Array<String>) {
         },
     )
     runtime.use { runtime ->
-        val sessionId = runtime.createSession()
+        val sessionId = runtime.openSession(sessionLog.sessionId)
         val renderer = TerminalStreamRenderer(System.out)
         runtime.subscribe(sessionId, renderer::onEvent).use {
             try {

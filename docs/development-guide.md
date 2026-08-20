@@ -4,7 +4,7 @@
 
 本项目最终实现一个可测试、可恢复、可扩展的 Kotlin Agent Runtime。它负责持续驱动模型与工具协作，并管理上下文、Session、执行状态、取消和错误；具体模型和业务工具由外部实现。
 
-当前阶段支持 DeepSeek 文本与单工具 SSE、可取消的多 Step 工具执行、YAML 应用配置和 JSONL Session 持久化；暂不支持并行工具调用和插件框架。
+当前阶段支持 DeepSeek 文本与单工具 SSE、可取消的多 Step 工具执行、进程内多 Session/Run 服务、带连续序号的事件信封、JSONL Session 持久化和内存 Event Store；暂不支持数据库 Event Store 实现、并行工具调用和插件框架。
 
 `AgentRuntimeService` 是 CLI 和未来 HTTP Adapter 共同使用的应用服务。它为 Session 和异步 Run 分配不透明 ID，允许不同 Session 并行运行，并明确拒绝同一 Session 的并发 Run。等待方取消只停止等待，不会取消后台 Run；显式 `cancelRun` 或 Runtime 关闭才会传播取消。
 
@@ -35,20 +35,22 @@ Agent.submit(content)
 
 1. `message/Message.kt`：模型能够看到的数据。
 2. `session/SessionEvent.kt`：Agent 实际发生过的事实。
-3. `session/SessionLog.kt`：内存与持久化实现共同遵守的追加接口。
-4. `session/Session.kt`：Session 对存储实现的封装。
-5. `session/SessionEventJson.kt`：领域事件和文件 DTO 的显式映射。
-6. `session/JsonlFileSessionLog.kt`：JSONL 追加与加载。
-7. `session/SessionRecovery.kt`：崩溃尾部如何补齐工具、Step 和 Turn。
-8. `session/SessionProjector.kt`：事实如何转换成模型上下文。
-9. `model/LanguageModel.kt`：核心代码依赖的模型端口。
-10. `model/ModelAccounting.kt`：Token、停止原因和价格快照。
-11. `session/SessionUsageReporter.kt`：从事实日志计算商业用量。
-12. `tool/`：工具定义、注册表和受工作区限制的文件读取实现。
-13. `Agent.kt`：驱动 Turn、Step、模型和工具。
-14. `runtime/AgentRuntimeService.kt`：管理进程内 Session、Run 和异步生命周期。
-15. Session 测试：验证格式往返、恢复和损坏文件失败。
-16. 其余测试：验证投影、内存日志和 Agent 编排行为。
+3. `session/SessionEventEnvelope.kt`：事实的 Session ID、连续序号和发生时间。
+4. `session/SessionLog.kt`：内存与持久化实现共同遵守的追加接口。
+5. `session/SessionEventStore.kt`：多 Session 存储与乐观并发接口。
+6. `session/Session.kt`：分配信封元数据并封装存储实现。
+7. `session/SessionEventJson.kt`：领域信封和文件 DTO 的显式映射。
+8. `session/JsonlFileSessionLog.kt`：JSONL 追加、加载和顺序校验。
+9. `session/SessionRecovery.kt`：崩溃尾部如何补齐工具、Step 和 Turn。
+10. `session/SessionProjector.kt`：事实如何转换成模型上下文。
+11. `model/LanguageModel.kt`：核心代码依赖的模型端口。
+12. `model/ModelAccounting.kt`：Token、停止原因和价格快照。
+13. `session/SessionUsageReporter.kt`：从事实日志计算商业用量。
+14. `tool/`：工具定义、注册表和受工作区限制的文件读取实现。
+15. `Agent.kt`：驱动 Turn、Step、模型和工具。
+16. `runtime/AgentRuntimeService.kt`：管理进程内 Session、Run 和异步生命周期。
+17. Session 测试：验证信封、格式往返、恢复和损坏文件失败。
+18. 其余测试：验证投影、内存日志和 Agent 编排行为。
 
 阅读时对每个模块回答：它拥有什么状态、谁能修改状态、输入输出是什么、失败如何传播、它依赖哪些模块。
 
@@ -57,6 +59,8 @@ Agent.submit(content)
 ### Session Event 与 Message
 
 `SessionEvent` 是事实源，记录 Agent 按顺序发生了什么。`Message` 是从部分事实计算出的模型上下文。并非所有事件都进入模型，例如 `TurnStarted` 需要记录，但不应发送给模型。
+
+`SessionEventEnvelope` 是持久化和传输单位：`sessionId` 表达归属，`sequence` 在单 Session 内从 1 连续递增，`occurredAt` 用于观测。排序和 SSE 断点续传必须使用序号，不能依赖可能回拨或重复的系统时间。
 
 ```text
 SessionEvent Log = 唯一事实源
@@ -85,13 +89,15 @@ Agent Runtime 只需要“完整请求产生一个结果”的能力，不应该
 
 `AgentOptions.maxStepsPerTurn` 和 `turnTimeout` 是应用层必须提供的部署配置。达到 Step 上限时，Agent 在创建下一 Step 前抛出 `StepLimitExceededException`；达到总时间限制时取消当前执行。两条路径都会先关闭当前 Step，再以明确终态关闭 Turn。
 
-### SessionLog 与 JSONL
+### SessionLog、Event Store 与 JSONL
 
-`Session` 依赖 `SessionLog`，默认使用 `InMemorySessionLog`；需要跨进程恢复时注入 `JsonlFileSessionLog`。文件实现每次先完成磁盘追加，再更新内存快照，避免写入失败后内存声称事件已经持久化。
+`SessionLog` 是单个 Session 看到的窄接口；`SessionEventStore` 是服务端集中管理多个 Session 的存储接口，`EventStoreSessionLog` 负责适配两者。`InMemorySessionEventStore` 给出数据库实现必须保持的参考语义：创建和读取要明确区分不存在，游标读取返回稳定快照，追加必须原子校验 `expectedSequence` 后再写入。旧写入方持有的序号与实际序号不一致时抛出 `SessionSequenceConflictException`，不能覆盖或悄悄续写。
 
-`Session.subscribe` 对成功追加后的事件进行实时广播，不重放历史。持久化失败不会通知观察者；观察者失败也不会反转已经完成的持久化。应用入口使用 `TerminalStreamRenderer` 消费 `ModelChunkReceived.TextDelta`，Session 和 Agent 不依赖终端展示策略。
+`Session` 默认使用 `InMemorySessionLog`；需要跨进程恢复时注入 `JsonlFileSessionLog`。Session 使用注入的 `Clock` 分配时间，并把读取到的最新序号作为 `expectedSequence`。存储实现再次校验 Session 归属和连续序号；文件实现先完成磁盘追加，再更新内存快照，避免写入失败后内存声称事件已经持久化。当前内存 Event Store 只验证领域和并发语义，不提供跨进程持久化。
 
-JSON DTO 与领域事件分离。`SessionEventJson` 显式完成双向映射，因此磁盘字段属于存储边界，不要求核心领域类型携带序列化注解。
+`Session.subscribe` 对成功追加后的裸事件进行实时广播，`subscribeEnvelopes` 提供包含游标元数据的广播，两者都不重放历史。持久化失败不会通知观察者；观察者失败也不会反转已经完成的持久化。应用入口使用 `TerminalStreamRenderer` 消费 `ModelChunkReceived.TextDelta`，Session 和 Agent 不依赖终端展示策略。
+
+JSON DTO 与领域信封分离。`SessionEventJson` 显式完成双向映射，因此磁盘字段属于存储边界，不要求核心领域类型携带序列化注解。当前格式版本为 `1`；缺少信封的旧预发布日志会明确失败，不猜测缺失的 ID 和时间。
 
 文件加载采用失败即停止：未知事件或无效 JSON 会抛出包含路径和行号的 `SessionLogFormatException`。当前不支持多个进程同时写一个文件，也不承诺断电级 `fsync` 持久性。
 

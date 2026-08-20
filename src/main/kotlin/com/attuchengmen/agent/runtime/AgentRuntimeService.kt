@@ -2,8 +2,11 @@ package com.attuchengmen.agent.runtime
 
 import com.attuchengmen.agent.Agent
 import com.attuchengmen.agent.message.AssistantMessage
+import com.attuchengmen.agent.session.InMemorySessionLog
 import com.attuchengmen.agent.session.Session
 import com.attuchengmen.agent.session.SessionEvent
+import com.attuchengmen.agent.session.SessionEventEnvelope
+import com.attuchengmen.agent.session.SessionId
 import com.attuchengmen.agent.session.TurnEnded
 import com.attuchengmen.agent.session.TurnOutcome
 import kotlinx.coroutines.CancellationException
@@ -19,16 +22,6 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.CoroutineContext
-
-/** 服务端分配的不可互换 Session 标识。 */
-@JvmInline
-value class SessionId(
-    val value: String,
-) {
-    init {
-        require(value.isNotBlank()) { "session id must not be blank" }
-    }
-}
 
 /** 一次异步 Agent 执行的不可互换标识。 */
 @JvmInline
@@ -81,6 +74,11 @@ class UnknownRunException(
     val runId: RunId,
 ) : NoSuchElementException("unknown run ${runId.value}")
 
+/** 同一 Session 已经由当前 Runtime 实例管理。 */
+class SessionAlreadyOpenException(
+    val sessionId: SessionId,
+) : IllegalStateException("session ${sessionId.value} is already open")
+
 /** 同一 Session 已有未结束 Run，不能接受并发执行。 */
 class SessionBusyException(
     val sessionId: SessionId,
@@ -104,7 +102,7 @@ class AgentRuntimeClosedException : IllegalStateException("agent runtime is clos
  * @param agentFactory 为新 Session 创建拥有该 Session 的 Agent。
  */
 class AgentRuntimeService(
-    private val sessionFactory: (SessionId) -> Session = { Session() },
+    private val sessionFactory: (SessionId) -> Session = { Session(InMemorySessionLog(it)) },
     coroutineContext: CoroutineContext = Dispatchers.Default,
     private val agentFactory: (Session) -> Agent,
 ) : AutoCloseable {
@@ -122,9 +120,23 @@ class AgentRuntimeService(
         do {
             id = SessionId(UUID.randomUUID().toString())
         } while (sessions.containsKey(id))
+        registerSession(id)
+    }
+
+    /** 按持久化标识打开已有 Session；重复打开会明确失败。 */
+    fun openSession(sessionId: SessionId): SessionId = synchronized(lifecycleLock) {
+        ensureOpen()
+        if (sessions.containsKey(sessionId)) throw SessionAlreadyOpenException(sessionId)
+        registerSession(sessionId)
+    }
+
+    private fun registerSession(id: SessionId): SessionId {
         val session = sessionFactory(id)
+        require(session.id == id) {
+            "session factory returned ${session.id.value}, expected ${id.value}"
+        }
         sessions[id] = SessionEntry(session, agentFactory(session))
-        id
+        return id
     }
 
     /**
@@ -166,9 +178,19 @@ class AgentRuntimeService(
     /** 返回 Session 当前的稳定事件快照。 */
     fun sessionEvents(sessionId: SessionId): List<SessionEvent> = sessionEntry(sessionId).session.events
 
+    /** 返回指定游标之后的 Session 事实，供断点续传使用。 */
+    fun sessionEnvelopes(sessionId: SessionId, afterSequence: Long = 0): List<SessionEventEnvelope> {
+        require(afterSequence >= 0) { "event cursor must not be negative" }
+        return sessionEntry(sessionId).session.envelopes.filter { it.sequence > afterSequence }
+    }
+
     /** 订阅成功追加后的 Session 实时事件，不重放历史。 */
     fun subscribe(sessionId: SessionId, observer: (SessionEvent) -> Unit): AutoCloseable =
         sessionEntry(sessionId).session.subscribe(observer)
+
+    /** 订阅带游标元数据的 Session 实时事件，不重放历史。 */
+    fun subscribeEnvelopes(sessionId: SessionId, observer: (SessionEventEnvelope) -> Unit): AutoCloseable =
+        sessionEntry(sessionId).session.subscribeEnvelopes(observer)
 
     /** 停止接受新工作并向全部活跃 Run 传播取消。 */
     override fun close() {

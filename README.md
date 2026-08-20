@@ -4,8 +4,9 @@
 
 ## 当前能力
 
-- 使用追加式 `SessionEvent` 记录 Agent 的运行事实。
+- 使用追加式 `SessionEventEnvelope` 保存 Session ID、连续序号、发生时间和运行事实。
 - 支持内存日志和 JSONL 文件日志，重启后可恢复 Session 事实。
+- 提供多 Session `SessionEventStore` 端口和内存实现，通过 `expectedSequence` 拒绝并发写覆盖。
 - JSONL 重启会追加修复崩溃时未闭合的工具结果、Step 和 Turn。
 - 从事件日志投影模型需要的消息历史。
 - 通过 `LanguageModel` 端口调用可替换的模型实现。
@@ -44,7 +45,9 @@ unset DEEPSEEK_API_KEY
 val session = Session(JsonlFileSessionLog(Path.of("data/session.jsonl")))
 ```
 
-每个 `SessionEvent` 占一行。重新构造 `JsonlFileSessionLog` 会按原顺序恢复事件；损坏数据会报告文件路径和行号，不会被静默忽略。
+每个 `SessionEventEnvelope` 占一行。重新构造 `JsonlFileSessionLog` 会恢复原 Session ID、序号、时间和事件；错误归属、跳号或损坏 JSON 会报告文件路径和行号，不会被静默忽略。
+
+当前 JSONL 格式版本为 `1`。引入事件信封之前生成的预发布日志不包含可靠 Session ID 和时间，系统会明确拒绝，不会猜测或静默迁移；需要保留时应先归档旧文件。
 
 ## 阅读入口
 

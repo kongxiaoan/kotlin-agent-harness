@@ -90,8 +90,11 @@ class SessionEventJsonTest {
             TurnEnded(turn = 5, outcome = TurnOutcome.Failed("model unavailable")),
         )
 
-        for (event in events) {
-            assertEquals(event, SessionEventJson.decode(SessionEventJson.encode(event)))
+        val sessionId = SessionId("session-1")
+        val occurredAt = Instant.parse("2026-08-20T08:00:00Z")
+        for ((index, event) in events.withIndex()) {
+            val envelope = SessionEventEnvelope(sessionId, index + 1L, occurredAt, event)
+            assertEquals(envelope, SessionEventJson.decode(SessionEventJson.encode(envelope)))
         }
     }
 }

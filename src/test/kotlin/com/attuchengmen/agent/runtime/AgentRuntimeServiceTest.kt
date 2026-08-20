@@ -9,6 +9,8 @@ import com.attuchengmen.agent.model.ModelFinishReason
 import com.attuchengmen.agent.model.ModelRequest
 import com.attuchengmen.agent.model.ModelResponse
 import com.attuchengmen.agent.session.Session
+import com.attuchengmen.agent.session.SessionId
+import com.attuchengmen.agent.session.InMemorySessionLog
 import com.attuchengmen.agent.session.TurnEnded
 import com.attuchengmen.agent.session.TurnOutcome
 import com.attuchengmen.agent.tool.ToolRegistry
@@ -46,6 +48,41 @@ class AgentRuntimeServiceTest {
                 TurnOutcome.Completed,
                 service.sessionEvents(sessionId).filterIsInstance<TurnEnded>().single().outcome,
             )
+        } finally {
+            service.close()
+        }
+    }
+
+    @Test
+    fun `session envelopes support replay after sequence cursor`(): Unit = runBlocking {
+        val service = serviceWith(LanguageModel { ModelResponse.Answer(AssistantMessage("answer")) })
+        try {
+            val sessionId = service.createSession()
+            service.awaitRun(service.startRun(sessionId, "question"))
+            val all = service.sessionEnvelopes(sessionId)
+            val cursor = all[all.lastIndex - 1].sequence
+
+            val replay = service.sessionEnvelopes(sessionId, afterSequence = cursor)
+
+            assertEquals(listOf(all.last()), replay)
+            assertEquals(sessionId, replay.single().sessionId)
+        } finally {
+            service.close()
+        }
+    }
+
+    @Test
+    fun `existing session opens with its persisted id`(): Unit = runBlocking {
+        val persistedId = SessionId("persisted-session")
+        val service = AgentRuntimeService(
+            sessionFactory = { requestedId -> Session(InMemorySessionLog(requestedId)) },
+            agentFactory = { session ->
+                Agent(session, LanguageModel { ModelResponse.Answer(AssistantMessage("done")) }, ToolRegistry(), TEST_OPTIONS)
+            },
+        )
+        try {
+            assertEquals(persistedId, service.openSession(persistedId))
+            assertFailsWith<SessionAlreadyOpenException> { service.openSession(persistedId) }
         } finally {
             service.close()
         }

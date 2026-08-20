@@ -11,6 +11,7 @@ import com.attuchengmen.agent.model.ToolCall
 import com.attuchengmen.agent.model.ToolDefinition
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -19,7 +20,7 @@ import java.math.BigDecimal
 import java.time.Duration
 import java.time.Instant
 
-/** JSON 文件边界使用的 SessionEvent 编解码器。 */
+/** JSON 文件边界使用的 SessionEventEnvelope 编解码器。 */
 internal object SessionEventJson {
     private val json = Json {
         classDiscriminator = "type"
@@ -27,12 +28,41 @@ internal object SessionEventJson {
         ignoreUnknownKeys = false
     }
 
-    fun encode(event: SessionEvent): String =
-        json.encodeToString<StoredSessionEvent>(event.toStored())
+    fun encode(envelope: SessionEventEnvelope): String =
+        json.encodeToString(
+            StoredSessionEventEnvelope(
+                formatVersion = FORMAT_VERSION,
+                sessionId = envelope.sessionId.value,
+                sequence = envelope.sequence,
+                occurredAt = envelope.occurredAt.toString(),
+                event = envelope.event.toStored(),
+            ),
+        )
 
-    fun decode(value: String): SessionEvent =
-        json.decodeFromString<StoredSessionEvent>(value).toDomain()
+    fun decode(value: String): SessionEventEnvelope {
+        val stored = json.decodeFromString<StoredSessionEventEnvelope>(value)
+        if (stored.formatVersion != FORMAT_VERSION) {
+            throw SerializationException("unsupported session format version ${stored.formatVersion}")
+        }
+        return SessionEventEnvelope(
+            sessionId = SessionId(stored.sessionId),
+            sequence = stored.sequence,
+            occurredAt = Instant.parse(stored.occurredAt),
+            event = stored.event.toDomain(),
+        )
+    }
+
+    private const val FORMAT_VERSION = 1
 }
+
+@Serializable
+private data class StoredSessionEventEnvelope(
+    val formatVersion: Int,
+    val sessionId: String,
+    val sequence: Long,
+    val occurredAt: String,
+    val event: StoredSessionEvent,
+)
 
 @Serializable
 private sealed interface StoredSessionEvent
