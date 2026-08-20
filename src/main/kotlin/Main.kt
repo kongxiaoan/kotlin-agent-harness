@@ -4,12 +4,15 @@ import com.attuchengmen.agent.AgentOptions
 import com.attuchengmen.agent.model.LanguageModel
 import com.attuchengmen.agent.model.providers.DeepSeekAdapter
 import com.attuchengmen.agent.model.providers.DeepSeekConfig
+import com.attuchengmen.agent.runtime.AgentRuntimeService
+import com.attuchengmen.agent.runtime.RunState
 import com.attuchengmen.agent.session.JsonlFileSessionLog
 import com.attuchengmen.agent.session.Session
 import com.attuchengmen.agent.tool.ReadFileTool
 import com.attuchengmen.agent.tool.ToolRegistry
 import com.attuchengmen.config.AppConfig
 import com.attuchengmen.config.AppConfigLoader
+import kotlinx.coroutines.CancellationException
 import java.nio.file.Path
 
 /** 从 YAML 和环境变量组装具体能力，并运行一次完整 Agent Turn。 */
@@ -23,27 +26,40 @@ suspend fun main(args: Array<String>) {
     require(task.isNotBlank()) { "task must not be blank" }
 
     val model = createModel(config)
-    val session = Session(JsonlFileSessionLog(config.sessionPath))
     val tools = ToolRegistry(
         listOf(ReadFileTool(config.workspaceRoot, config.readFileMaxBytes)),
     )
-    val agent = Agent(
-        session,
-        model,
-        tools,
-        AgentOptions(
-            maxStepsPerTurn = config.agent.maxStepsPerTurn,
-            turnTimeout = config.agent.turnTimeout,
-        ),
+    val runtime = AgentRuntimeService(
+        sessionFactory = { Session(JsonlFileSessionLog(config.sessionPath)) },
+        agentFactory = { session ->
+            Agent(
+                session,
+                model,
+                tools,
+                AgentOptions(
+                    maxStepsPerTurn = config.agent.maxStepsPerTurn,
+                    turnTimeout = config.agent.turnTimeout,
+                ),
+            )
+        },
     )
-
-    val renderer = TerminalStreamRenderer(System.out)
-    session.subscribe(renderer::onEvent).use {
-        try {
-            renderer.finish(agent.submit(task))
-        } catch (error: Exception) {
-            renderer.finishFailure()
-            throw error
+    runtime.use { runtime ->
+        val sessionId = runtime.createSession()
+        val renderer = TerminalStreamRenderer(System.out)
+        runtime.subscribe(sessionId, renderer::onEvent).use {
+            try {
+                val run = runtime.awaitRun(runtime.startRun(sessionId, task))
+                when (val state = run.state) {
+                    is RunState.Completed -> renderer.finish(state.response)
+                    is RunState.MaxTokens -> renderer.finish(state.response)
+                    is RunState.Failed -> error(state.message)
+                    RunState.Cancelled -> throw CancellationException("agent run was cancelled")
+                    RunState.Running -> error("awaited agent run is still running")
+                }
+            } catch (error: Exception) {
+                renderer.finishFailure()
+                throw error
+            }
         }
     }
 }

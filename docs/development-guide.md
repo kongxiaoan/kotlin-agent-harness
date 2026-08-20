@@ -6,6 +6,8 @@
 
 当前阶段支持 DeepSeek 文本与单工具 SSE、可取消的多 Step 工具执行、YAML 应用配置和 JSONL Session 持久化；暂不支持并行工具调用和插件框架。
 
+`AgentRuntimeService` 是 CLI 和未来 HTTP Adapter 共同使用的应用服务。它为 Session 和异步 Run 分配不透明 ID，允许不同 Session 并行运行，并明确拒绝同一 Session 的并发 Run。等待方取消只停止等待，不会取消后台 Run；显式 `cancelRun` 或 Runtime 关闭才会传播取消。
+
 ## 当前数据流
 
 ```text
@@ -44,8 +46,9 @@ Agent.submit(content)
 11. `session/SessionUsageReporter.kt`：从事实日志计算商业用量。
 12. `tool/`：工具定义、注册表和受工作区限制的文件读取实现。
 13. `Agent.kt`：驱动 Turn、Step、模型和工具。
-14. Session 测试：验证格式往返、恢复和损坏文件失败。
-15. 其余测试：验证投影、内存日志和 Agent 编排行为。
+14. `runtime/AgentRuntimeService.kt`：管理进程内 Session、Run 和异步生命周期。
+15. Session 测试：验证格式往返、恢复和损坏文件失败。
+16. 其余测试：验证投影、内存日志和 Agent 编排行为。
 
 阅读时对每个模块回答：它拥有什么状态、谁能修改状态、输入输出是什么、失败如何传播、它依赖哪些模块。
 

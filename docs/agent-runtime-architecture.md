@@ -65,6 +65,9 @@ Agent Runtime 要持续运行，直到模型给出答案或执行被终止：
 Main（应用组装）
   │
   ▼
+AgentRuntimeService（Session / Run 生命周期）
+  │
+  ▼
 Agent（Turn / Step 编排）
   ├── SessionProjector ──> ModelRequest ──> LanguageModel
   │                                         └── DeepSeekAdapter
@@ -77,7 +80,7 @@ Agent（Turn / Step 编排）
 SessionEvent ──> 恢复 / 消息投影 / 实时展示 / Token Usage 统计
 ```
 
-核心依赖方向是：`Agent` 依赖 `LanguageModel`，并通过 `Session` 使用 `SessionLog` 存储接口，不依赖 DeepSeek、JSONL 或终端。具体 Provider、存储和展示在应用组装层接入。
+核心依赖方向是：`AgentRuntimeService` 管理多个 Agent 的生命周期；`Agent` 依赖 `LanguageModel`，并通过 `Session` 使用 `SessionLog` 存储接口，不依赖 DeepSeek、JSONL 或终端。具体 Provider、存储和展示在应用组装层接入。
 
 ## 一次执行的层级
 
@@ -133,6 +136,7 @@ Turn 1
 | 模块 | 单一职责 |
 |---|---|
 | `Agent` | 驱动 Turn、Step、模型和工具，不保存第二份消息历史 |
+| `AgentRuntimeService` | 分配 Session/Run ID，管理异步执行、并发和取消 |
 | `SessionEvent` | 定义已经发生且需要审计的运行事实 |
 | `Session` | 提供事实追加、稳定快照和实时事件发布 |
 | `SessionLog` | 定义事件存储接口；内存和 JSONL 是不同实现 |
@@ -184,14 +188,15 @@ LLM 只能生成决策；Tool 才能读取文件或操作外部系统。工具�
 
 当前项目已经是可以本地运行和测试的 Agent Runtime 内核，但还不是完整 Agent System：
 
-- 一个 `Agent` 实例内的 Turn 可以安全串行执行。
+- `AgentRuntimeService` 可以在单进程内管理多个 Session 和可查询、可取消的异步 Run。
+- 同一 Session 拒绝并发 Run，不同 Session 可以并行执行。
 - JSONL 支持单进程持久化和崩溃尾部修复。
 - 当前只支持单个工具调用，不支持并行工具调用。
-- 当前没有多 Session 服务、HTTP API、数据库事务、身份认证和租户隔离。
+- Run 状态仍在内存中，当前没有 HTTP API、数据库事务、身份认证和租户隔离。
 - `read_file` 有工作区限制，但还不是面向不可信远程用户的完整工具沙箱。
 - Token Usage 是运行计量事实，不等同于最终账单系统。
 
-下一阶段接入 HTTP 时，应先增加独立的应用服务层管理 `SessionId`、`RunId` 和多 Session 生命周期，再让 Ktor 或其他 Web 框架作为传输适配器调用它。HTTP Handler 不应直接拥有 Agent Loop。
+下一阶段应把 Session Event 放入带事件序号的多 Session 持久化存储，再让 Ktor 或其他 Web 框架作为传输适配器调用现有应用服务。HTTP Handler 不应直接拥有 Agent Loop。
 
 ## 面试 Agent 工程师时怎样介绍
 

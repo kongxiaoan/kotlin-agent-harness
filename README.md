@@ -21,6 +21,7 @@
 - `DeepSeekAdapter` 支持文本和单个工具调用的 SSE 增量组装，并在流长期无数据时中止和重试。
 - Provider Usage、模型身份和价格快照持久化到 Session；支持精确成本、缓存率和重试浪费统计。
 - Session 在持久化后发布实时事件，终端按 attempt 增量显示模型文本、标记失败重试且不重复最终答案。
+- `AgentRuntimeService` 在单进程内管理多个 Session 和异步 Run；同一 Session 拒绝并发 Run，不同 Session 可以并行。
 - 提供限制在工作区内、带大小上限的 `read_file` 工具。
 - 使用 SLF4J + Logback 输出运行日志，使用 kotlinx.serialization 处理 JSON。
 
