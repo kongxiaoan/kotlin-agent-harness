@@ -34,6 +34,9 @@ data class ModelConfig(
     val connectTimeout: Duration,
     val requestTimeout: Duration,
     val streamIdleTimeout: Duration,
+    val contextWindowTokens: Int,
+    val maxOutputTokens: Int,
+    val contextSafetyMarginTokens: Int,
     val pricing: ModelPricing,
     val retryPolicy: ModelRetryPolicy,
 )
@@ -71,6 +74,9 @@ object AppConfigLoader {
             "connect-timeout-seconds",
             "request-timeout-seconds",
             "stream-idle-timeout-seconds",
+            "context-window-tokens",
+            "max-output-tokens",
+            "context-safety-margin-tokens",
             "pricing",
             "retry",
         )
@@ -103,6 +109,9 @@ object AppConfigLoader {
                 connectTimeout = Duration.ofSeconds(model.positiveLong("connect-timeout-seconds")),
                 requestTimeout = Duration.ofSeconds(model.positiveLong("request-timeout-seconds")),
                 streamIdleTimeout = Duration.ofSeconds(model.positiveLong("stream-idle-timeout-seconds")),
+                contextWindowTokens = model.positiveInt("context-window-tokens"),
+                maxOutputTokens = model.positiveInt("max-output-tokens"),
+                contextSafetyMarginTokens = model.nonNegativeInt("context-safety-margin-tokens"),
                 pricing = pricing.modelPricing(),
                 retryPolicy = ModelRetryPolicy(
                     maxRetries = retry.nonNegativeInt("max-retries"),

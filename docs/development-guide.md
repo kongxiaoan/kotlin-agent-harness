@@ -4,7 +4,7 @@
 
 本项目最终实现一个可测试、可恢复、可扩展的 Kotlin Agent Runtime。它负责持续驱动模型与工具协作，并管理上下文、Session、执行状态、取消和错误；具体模型和业务工具由外部实现。
 
-当前阶段支持 DeepSeek 文本与单工具 SSE、可取消的多 Step 工具执行、进程内多 Session/Run 服务、带连续序号的事件信封、JSONL Session 持久化和内存 Event Store；暂不支持数据库 Event Store 实现、并行工具调用和插件框架。
+当前阶段支持 DeepSeek 文本与单工具 SSE、可取消的多 Step 工具执行、进程内多 Session/Run 服务、带连续序号的事件信封、JSONL Session 持久化、内存 Event Store 和确定性的 Context Budget；暂不支持长期 Memory、Compaction、数据库 Event Store、并行工具调用和插件框架。
 
 `AgentRuntimeService` 是 CLI 和未来 HTTP Adapter 共同使用的应用服务。它为 Session 和异步 Run 分配不透明 ID，允许不同 Session 并行运行，并明确拒绝同一 Session 的并发 Run。等待方取消只停止等待，不会取消后台 Run；显式 `cancelRun` 或 Runtime 关闭才会传播取消。
 
@@ -13,7 +13,8 @@
 ```text
 Agent.submit(content)
   → Step 1：记录用户消息并调用模型
-  → 调用前记录 ModelRequestPrepared
+  → ContextManager 按预算选择完整 Turn
+  → 调用前记录 ContextPrepared 与 ModelRequestPrepared
   → 模型请求工具：ToolRegistry.execute
   → 记录 ToolCall 与 ToolResult
   → Step 2：从 Session 重新投影上下文并调用模型
@@ -67,7 +68,9 @@ SessionEvent Log = 唯一事实源
 Message List     = 可重新计算的投影
 ```
 
-`ModelRequestPrepared` 记录请求发生的位置和当时可见的工具定义。请求消息不重复保存，而是从该事件之前的消息事实重建；因此 Session Log 可以还原每个 Step 实际发送的 `ModelRequest`。
+`ContextPrepared` 记录一次 Attempt 选择的 Session 序号区间、估算 Token、输入预算和估算器版本。`ModelRequestPrepared` 记录请求边界、输出上限和当时可见的工具定义。请求消息不重复保存，而是从所选事实区间重建；因此 Session Log 可以还原每个 Step 实际发送的 `ModelRequest`。
+
+`ContextManager` 每次模型调用前重新运行。它固定保留当前 Turn，再从近到远加入连续的完整历史 Turn；第一个历史 Turn 超出预算后停止，避免跳过近期历史或拆断 ToolCall/ToolResult。当前 UTF-8 保守估算器用于发送前容量保护，不等于 Provider 返回的精确计费用量。
 
 ### 为什么使用 sealed interface
 
@@ -186,5 +189,6 @@ Problem
 - 一个模型响应中的并行工具调用
 - Retry-After、随机抖动和无限重试模式
 - 插件系统和 Subagent
+- 长期 Memory、自动 Compaction 和多来源 Context 排序；目标职责与实施顺序见 [Memory 与 Context Management 架构](memory-context-architecture.md)
 
 这些会在核心行为出现真实需要时逐步加入，而不是提前设计。

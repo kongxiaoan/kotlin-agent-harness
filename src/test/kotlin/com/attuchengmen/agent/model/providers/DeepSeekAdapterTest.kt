@@ -319,6 +319,7 @@ class DeepSeekAdapterTest {
                     ToolResultMessage("call-1", "permission denied", isError = true),
                 ),
                 tools = listOf(tool),
+                maxOutputTokens = 2048,
             ),
         ) }
 
@@ -327,6 +328,7 @@ class DeepSeekAdapterTest {
         val body = Json.parseToJsonElement(received.body).jsonObject
         assertEquals("test-model", body.getValue("model").jsonPrimitive.content)
         assertEquals("disabled", body.getValue("thinking").jsonObject.getValue("type").jsonPrimitive.content)
+        assertEquals(2048, body.getValue("max_tokens").jsonPrimitive.content.toInt())
         val messages = body.getValue("messages").jsonArray
         assertEquals("user", messages[0].jsonObject.getValue("role").jsonPrimitive.content)
         assertEquals("I will read it.", messages[1].jsonObject.getValue("content").jsonPrimitive.content)

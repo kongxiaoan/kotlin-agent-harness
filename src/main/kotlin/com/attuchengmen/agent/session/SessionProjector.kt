@@ -25,6 +25,7 @@ object SessionProjector {
                 is AssistantMessageAdded -> AssistantMessage(event.content)
                 is ToolCallRequested -> ToolCallMessage(event.call, event.content)
                 is ToolResultAdded -> ToolResultMessage(event.callId, event.content, event.isError)
+                is ContextPrepared -> null
                 is ModelRequestPrepared -> null
                 is ModelRetryScheduled -> null
                 is ModelChunkReceived -> null
@@ -45,9 +46,25 @@ object SessionProjector {
         }
         val boundary = matches.single()
         val event = boundary.value as ModelRequestPrepared
+        val contextMatches = events.subList(0, boundary.index).filterIsInstance<ContextPrepared>().filter {
+            it.turn == turn && it.step == step && it.attempt == attempt
+        }
+        require(contextMatches.size <= 1) {
+            "expected at most one context selection for turn $turn step $step attempt $attempt"
+        }
+        val messageEvents = contextMatches.singleOrNull()?.let { context ->
+            require(context.selectedEventRanges.zipWithNext().all { (left, right) ->
+                left.toSequence < right.fromSequence
+            }) { "context event ranges must be ordered and non-overlapping" }
+            context.selectedEventRanges.flatMap { range ->
+                require(range.toSequence < boundary.index + 1L) { "context selection must precede its model request" }
+                events.subList((range.fromSequence - 1).toInt(), range.toSequence.toInt())
+            }
+        } ?: events.subList(0, boundary.index)
         return ModelRequest(
-            messages = toMessages(events.subList(0, boundary.index)),
+            messages = toMessages(messageEvents),
             tools = event.tools.toList(),
+            maxOutputTokens = event.maxOutputTokens,
         )
     }
 }

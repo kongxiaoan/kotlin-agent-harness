@@ -30,6 +30,15 @@ class SessionEventJsonTest {
                 content = "I will read it.",
             ),
             ToolResultAdded(1, 2, "call-1", "project content", isError = false),
+            ContextPrepared(
+                turn = 1,
+                step = 2,
+                attempt = 1,
+                selectedEventRanges = listOf(SessionEventRange(1, 4), SessionEventRange(8, 9)),
+                estimatedInputTokens = 200,
+                inputTokenBudget = 800,
+                tokenEstimatorId = "utf8-byte-conservative-v1",
+            ),
             ModelRequestPrepared(
                 turn = 1,
                 step = 2,
@@ -40,6 +49,7 @@ class SessionEventJsonTest {
                         parameters = buildJsonObject { put("type", "object") },
                     ),
                 ),
+                maxOutputTokens = 384,
                 profile = ModelProfile(
                     provider = "deepseek",
                     model = "deepseek-v4-flash",

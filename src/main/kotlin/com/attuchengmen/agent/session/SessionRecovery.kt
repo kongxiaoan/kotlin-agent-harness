@@ -37,6 +37,7 @@ object SessionRecovery {
                 is ToolResultAdded -> pendingCalls.remove(event.callId)
                 is UserMessageAdded,
                 is AssistantMessageAdded,
+                is ContextPrepared,
                 is ModelRequestPrepared,
                 is ModelRetryScheduled,
                 is ModelChunkReceived,

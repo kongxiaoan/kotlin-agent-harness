@@ -42,17 +42,29 @@ data class ToolResultAdded(
     val isError: Boolean,
 ) : SessionEvent
 
+/** 一次模型请求选择的事实区间和估算预算，用于重建实际模型输入。 */
+data class ContextPrepared(
+    val turn: Int,
+    val step: Int,
+    val attempt: Int,
+    val selectedEventRanges: List<SessionEventRange>,
+    val estimatedInputTokens: Int,
+    val inputTokenBudget: Int,
+    val tokenEstimatorId: String,
+) : SessionEvent
+
 /**
  * 一次模型请求即将发送，并保存消息日志之外的模型可见工具定义。
  *
- * 该事件之前的消息事实与 [tools] 共同构成实际请求；[profile] 保存
- * Provider、模型和当次价格，保证历史 Usage 可审计。
+ * [ContextPrepared] 存在时由其选择消息事实，否则使用该事件之前的全部消息事实；
+ * [tools] 和 [maxOutputTokens] 保存请求参数，[profile] 保存模型与价格快照。
  */
 data class ModelRequestPrepared(
     val turn: Int,
     val step: Int,
     val tools: List<ToolDefinition>,
     val attempt: Int = 1,
+    val maxOutputTokens: Int? = null,
     val profile: ModelProfile? = null,
 ) : SessionEvent
 

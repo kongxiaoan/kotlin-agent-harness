@@ -1,6 +1,9 @@
 import com.attuchengmen.TerminalStreamRenderer
 import com.attuchengmen.agent.Agent
 import com.attuchengmen.agent.AgentOptions
+import com.attuchengmen.agent.context.ConservativeUtf8TokenEstimator
+import com.attuchengmen.agent.context.ContextManager
+import com.attuchengmen.agent.context.ContextWindow
 import com.attuchengmen.agent.model.LanguageModel
 import com.attuchengmen.agent.model.providers.DeepSeekAdapter
 import com.attuchengmen.agent.model.providers.DeepSeekConfig
@@ -43,6 +46,14 @@ suspend fun main(args: Array<String>) {
                 AgentOptions(
                     maxStepsPerTurn = config.agent.maxStepsPerTurn,
                     turnTimeout = config.agent.turnTimeout,
+                ),
+                contextManager = ContextManager(
+                    ContextWindow(
+                        contextWindowTokens = config.model.contextWindowTokens,
+                        maxOutputTokens = config.model.maxOutputTokens,
+                        safetyMarginTokens = config.model.contextSafetyMarginTokens,
+                    ),
+                    ConservativeUtf8TokenEstimator,
                 ),
             )
         },

@@ -95,12 +95,31 @@ private data class StoredToolResultAdded(
 ) : StoredSessionEvent
 
 @Serializable
+@SerialName("context-prepared")
+private data class StoredContextPrepared(
+    val turn: Int,
+    val step: Int,
+    val attempt: Int,
+    val selectedEventRanges: List<StoredSessionEventRange>,
+    val estimatedInputTokens: Int,
+    val inputTokenBudget: Int,
+    val tokenEstimatorId: String,
+) : StoredSessionEvent
+
+@Serializable
+private data class StoredSessionEventRange(
+    val fromSequence: Long,
+    val toSequence: Long,
+)
+
+@Serializable
 @SerialName("model-request-prepared")
 private data class StoredModelRequestPrepared(
     val turn: Int,
     val step: Int,
     val tools: List<StoredToolDefinition>,
     val attempt: Int = 1,
+    val maxOutputTokens: Int? = null,
     val profile: StoredModelProfile? = null,
 ) : StoredSessionEvent
 
@@ -270,11 +289,21 @@ private fun SessionEvent.toStored(): StoredSessionEvent = when (this) {
         content = content,
     )
     is ToolResultAdded -> StoredToolResultAdded(turn, step, callId, content, isError)
+    is ContextPrepared -> StoredContextPrepared(
+        turn,
+        step,
+        attempt,
+        selectedEventRanges.map { StoredSessionEventRange(it.fromSequence, it.toSequence) },
+        estimatedInputTokens,
+        inputTokenBudget,
+        tokenEstimatorId,
+    )
     is ModelRequestPrepared -> StoredModelRequestPrepared(
         turn = turn,
         step = step,
         tools = tools.map { StoredToolDefinition(it.name, it.description, it.parameters) },
         attempt = attempt,
+        maxOutputTokens = maxOutputTokens,
         profile = profile?.toStored(),
     )
     is ModelRetryScheduled -> StoredModelRetryScheduled(turn, step, retry, delayMillis, failure)
@@ -305,11 +334,21 @@ private fun StoredSessionEvent.toDomain(): SessionEvent = when (this) {
         content = content,
     )
     is StoredToolResultAdded -> ToolResultAdded(turn, step, callId, content, isError)
+    is StoredContextPrepared -> ContextPrepared(
+        turn,
+        step,
+        attempt,
+        selectedEventRanges.map { SessionEventRange(it.fromSequence, it.toSequence) },
+        estimatedInputTokens,
+        inputTokenBudget,
+        tokenEstimatorId,
+    )
     is StoredModelRequestPrepared -> ModelRequestPrepared(
         turn = turn,
         step = step,
         tools = tools.map { ToolDefinition(it.name, it.description, it.parameters) },
         attempt = attempt,
+        maxOutputTokens = maxOutputTokens,
         profile = profile?.toDomain(),
     )
     is StoredModelRetryScheduled -> ModelRetryScheduled(turn, step, retry, delayMillis, failure)

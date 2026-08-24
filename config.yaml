@@ -7,6 +7,10 @@ model:
   request-timeout-seconds: 60
 # SSE 已连接但长时间没有任何数据时中止本次模型调用
   stream-idle-timeout-seconds: 30
+# 模型总上下文窗口；输入预算会扣除输出上限和安全余量
+  context-window-tokens: 1000000
+  max-output-tokens: 8192
+  context-safety-margin-tokens: 2048
 # 价格是请求发生时写入 Session 的快照；调价时必须修改 version 和费率
   pricing:
     version: deepseek-v4-flash-2026-08-19-cny

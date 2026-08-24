@@ -8,12 +8,12 @@
 - 支持内存日志和 JSONL 文件日志，重启后可恢复 Session 事实。
 - 提供多 Session `SessionEventStore` 端口和内存实现，通过 `expectedSequence` 拒绝并发写覆盖。
 - JSONL 重启会追加修复崩溃时未闭合的工具结果、Step 和 Turn。
-- 从事件日志投影模型需要的消息历史。
+- 每次模型调用按 Token 预算保留当前 Turn 和连续的最近完整 Turn，超限时不拆断工具交换。
 - 通过 `LanguageModel` 端口调用可替换的模型实现。
 - 通过 `ToolRegistry` 执行工具，并用后续 Step 把结果交回模型。
 - 可预期工具错误作为错误结果交回模型，允许模型在下一 Step 修正调用。
 - 每次模型请求携带已注册工具的描述和参数 JSON Schema。
-- 模型请求边界和当时的工具定义写入 Session，可从日志重建准确请求。
+- Context 选择区间、估算器版本、预算、输出上限和工具定义写入 Session，可从日志重建准确请求。
 - 每个 Turn 有可配置的最大 Step 数，防止模型无限调用工具。
 - 模型与工具调用支持协程取消；取消会完整关闭当前 Step 和 Turn。
 - Turn 总超时可配置，超时与调用方取消使用不同终态。
@@ -51,7 +51,7 @@ val session = Session(JsonlFileSessionLog(Path.of("data/session.jsonl")))
 
 ## 阅读入口
 
-先阅读 [Agent Runtime 架构与核心知识](docs/agent-runtime-architecture.md)，再通过[开发与架构学习指南](docs/development-guide.md)进入源码；Token 与商业计量见 [Token Usage 文档](docs/token-usage.md)。`src/main/kotlin/Main.kt` 是应用组装入口。
+先阅读 [Agent Runtime 架构与核心知识](docs/agent-runtime-architecture.md)，再通过[开发与架构学习指南](docs/development-guide.md)进入源码。后续架构分别见 [Memory 与 Context Management](docs/memory-context-architecture.md)以及 [Token Usage 与商业计量](docs/token-usage.md)。`src/main/kotlin/Main.kt` 是应用组装入口。
 
 ## 验证
 

@@ -1,6 +1,7 @@
 package com.attuchengmen.agent
 
 import com.attuchengmen.agent.message.AssistantMessage
+import com.attuchengmen.agent.context.ContextManager
 import com.attuchengmen.agent.model.LanguageModel
 import com.attuchengmen.agent.model.ModelChunk
 import com.attuchengmen.agent.model.ModelChunkAssembler
@@ -9,6 +10,7 @@ import com.attuchengmen.agent.model.ModelRequest
 import com.attuchengmen.agent.model.ModelRequestException
 import com.attuchengmen.agent.model.ModelResponse
 import com.attuchengmen.agent.session.AssistantMessageAdded
+import com.attuchengmen.agent.session.ContextPrepared
 import com.attuchengmen.agent.session.ModelChunkReceived
 import com.attuchengmen.agent.session.ModelRequestPrepared
 import com.attuchengmen.agent.session.ModelRetryScheduled
@@ -74,6 +76,7 @@ class Agent(
     private val tools: ToolRegistry,
     private val options: AgentOptions,
     private val clock: Clock = Clock.systemUTC(),
+    private val contextManager: ContextManager? = null,
 ) {
     private val turnMutex = Mutex()
 
@@ -138,11 +141,7 @@ class Agent(
         session.append(StepStarted(turn, step))
         try {
             if (content != null) session.append(UserMessageAdded(content))
-            val request = ModelRequest(
-                messages = SessionProjector.toMessages(session.events),
-                tools = tools.definitions,
-            )
-            val modelResult = generateWithRetry(turn, step, request)
+            val modelResult = generateWithRetry(turn, step)
             return when (val response = modelResult.response) {
                 is ModelResponse.Answer -> {
                     if (response.message.content.isNotEmpty()) {
@@ -189,15 +188,35 @@ class Agent(
     }
 
     /** 只重试 Provider 明确标记为瞬时失败的模型请求。 */
-    private suspend fun generateWithRetry(turn: Int, step: Int, request: ModelRequest): ModelCallResult {
+    private suspend fun generateWithRetry(turn: Int, step: Int): ModelCallResult {
         var retry = 0
         while (true) {
+            val attempt = retry + 1
+            val contextPlan = contextManager?.build(session.envelopes, turn, tools.definitions)
+            val request = contextPlan?.request ?: ModelRequest(
+                messages = SessionProjector.toMessages(session.events),
+                tools = tools.definitions,
+            )
+            if (contextPlan != null) {
+                session.append(
+                    ContextPrepared(
+                        turn = turn,
+                        step = step,
+                        attempt = attempt,
+                        selectedEventRanges = contextPlan.selectedEventRanges,
+                        estimatedInputTokens = contextPlan.estimatedInputTokens,
+                        inputTokenBudget = contextPlan.inputTokenBudget,
+                        tokenEstimatorId = contextPlan.tokenEstimatorId,
+                    ),
+                )
+            }
             session.append(
                 ModelRequestPrepared(
                     turn = turn,
                     step = step,
                     tools = request.tools,
-                    attempt = retry + 1,
+                    attempt = attempt,
+                    maxOutputTokens = request.maxOutputTokens,
                     profile = model.profile,
                 ),
             )
@@ -208,7 +227,7 @@ class Agent(
                         ModelChunkReceived(
                             turn = turn,
                             step = step,
-                            attempt = retry + 1,
+                            attempt = attempt,
                             chunk = chunk,
                             observedAt = if (chunk is ModelChunk.Usage) {
                                 clock.instant()

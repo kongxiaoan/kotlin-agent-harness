@@ -34,3 +34,14 @@ data class SessionEventEnvelope(
         require(sequence > 0) { "session event sequence must be positive" }
     }
 }
+
+/** Session 内一段包含首尾事件的连续序号范围。 */
+data class SessionEventRange(
+    val fromSequence: Long,
+    val toSequence: Long,
+) {
+    init {
+        require(fromSequence > 0) { "event range start must be positive" }
+        require(toSequence >= fromSequence) { "event range end must not precede its start" }
+    }
+}

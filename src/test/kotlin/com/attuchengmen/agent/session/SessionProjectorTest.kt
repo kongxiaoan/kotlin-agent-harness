@@ -90,4 +90,31 @@ class SessionProjectorTest {
             SessionProjector.toRequest(events, turn = 1, step = 1),
         )
     }
+
+    @Test
+    fun `request reconstruction honors recorded context selection`() {
+        val events = listOf(
+            TurnStarted(turn = 1),
+            UserMessageAdded("old"),
+            AssistantMessageAdded("old answer"),
+            TurnEnded(turn = 1, outcome = TurnOutcome.Completed),
+            TurnStarted(turn = 2),
+            UserMessageAdded("current"),
+            ContextPrepared(
+                turn = 2,
+                step = 1,
+                attempt = 1,
+                selectedEventRanges = listOf(SessionEventRange(5, 6)),
+                estimatedInputTokens = 10,
+                inputTokenBudget = 20,
+                tokenEstimatorId = "test-v1",
+            ),
+            ModelRequestPrepared(turn = 2, step = 1, tools = emptyList(), maxOutputTokens = 30),
+        )
+
+        assertEquals(
+            ModelRequest(listOf(UserMessage("current")), emptyList(), maxOutputTokens = 30),
+            SessionProjector.toRequest(events, turn = 2, step = 1),
+        )
+    }
 }

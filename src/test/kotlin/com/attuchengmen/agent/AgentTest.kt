@@ -1,5 +1,8 @@
 package com.attuchengmen.agent
 
+import com.attuchengmen.agent.context.ContextManager
+import com.attuchengmen.agent.context.ContextWindow
+import com.attuchengmen.agent.context.InputTokenEstimator
 import com.attuchengmen.agent.message.AssistantMessage
 import com.attuchengmen.agent.message.ToolCallMessage
 import com.attuchengmen.agent.message.ToolResultMessage
@@ -16,6 +19,7 @@ import com.attuchengmen.agent.model.TokenUsage
 import com.attuchengmen.agent.model.ToolCall
 import com.attuchengmen.agent.model.ToolDefinition
 import com.attuchengmen.agent.session.AssistantMessageAdded
+import com.attuchengmen.agent.session.ContextPrepared
 import com.attuchengmen.agent.session.ModelRequestPrepared
 import com.attuchengmen.agent.session.ModelRetryScheduled
 import com.attuchengmen.agent.session.ModelChunkReceived
@@ -56,6 +60,41 @@ import kotlin.test.assertFailsWith
  * 异常不会被吞掉，也不会在 Session 中产生虚假回复。
  */
 class AgentTest {
+    @Test
+    fun `bounded context is sent and can be reconstructed from the session log`() = runBlocking {
+        val session = Session()
+        session.append(TurnStarted(1))
+        session.append(UserMessageAdded("old"))
+        session.append(AssistantMessageAdded("old answer"))
+        session.append(TurnEnded(1, TurnOutcome.Completed))
+        session.append(TurnStarted(2))
+        session.append(UserMessageAdded("recent"))
+        session.append(AssistantMessageAdded("recent answer"))
+        session.append(TurnEnded(2, TurnOutcome.Completed))
+        val model = RecordingModel(ModelResponse.Answer(AssistantMessage("current answer")))
+        val estimator = object : InputTokenEstimator {
+            override val id = "message-count-v1"
+            override fun estimate(request: ModelRequest): Int = request.messages.size * 30
+        }
+        val agent = Agent(
+            session,
+            model,
+            ToolRegistry(),
+            TEST_OPTIONS,
+            contextManager = ContextManager(ContextWindow(100, 10), estimator),
+        )
+
+        agent.submit("current")
+
+        assertEquals(
+            listOf(UserMessage("recent"), AssistantMessage("recent answer"), UserMessage("current")),
+            model.requests.single().messages,
+        )
+        assertEquals(10, model.requests.single().maxOutputTokens)
+        assertEquals("message-count-v1", session.events.filterIsInstance<ContextPrepared>().single().tokenEstimatorId)
+        assertEquals(model.requests.single(), SessionProjector.toRequest(session.events, turn = 3, step = 1))
+    }
+
     @Test
     fun `stream chunks are logged and assembled into one assistant answer`() = runBlocking {
         val session = Session()

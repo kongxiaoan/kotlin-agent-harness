@@ -290,6 +290,7 @@ class DeepSeekAdapter(
         val body = buildJsonObject {
             put("model", config.model)
             put("stream", stream)
+            request.maxOutputTokens?.let { put("max_tokens", it) }
             if (stream) putJsonObject("stream_options") { put("include_usage", true) }
             putJsonObject("thinking") { put("type", "disabled") }
             putJsonArray("messages") {

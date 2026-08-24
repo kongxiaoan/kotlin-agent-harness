@@ -21,6 +21,9 @@ class AppConfigLoaderTest {
             assertEquals("DEEPSEEK_API_KEY", config.model.apiKeyEnv)
             assertEquals("deepseek-v4-flash", config.model.model)
             assertEquals(Duration.ofSeconds(30), config.model.streamIdleTimeout)
+            assertEquals(1_000_000, config.model.contextWindowTokens)
+            assertEquals(8192, config.model.maxOutputTokens)
+            assertEquals(2048, config.model.contextSafetyMarginTokens)
             assertEquals("deepseek-v4-flash-2026-08-19-cny", config.model.pricing.version)
             assertEquals("CNY", config.model.pricing.currency)
             assertEquals(0, config.model.pricing.cacheReadPerMillion.compareTo("0.02".toBigDecimal()))
@@ -62,6 +65,9 @@ class AppConfigLoaderTest {
               connect-timeout-seconds: 10
               request-timeout-seconds: 60
               stream-idle-timeout-seconds: 30
+              context-window-tokens: 1000000
+              max-output-tokens: 8192
+              context-safety-margin-tokens: 2048
               pricing:
                 version: deepseek-v4-flash-2026-08-19-cny
                 currency: CNY

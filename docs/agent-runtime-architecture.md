@@ -120,8 +120,8 @@ Turn 1
 1. 创建 TurnStarted
 2. 创建 StepStarted
 3. 首个 Step 记录 UserMessageAdded
-4. 从 SessionEvent 投影消息历史
-5. 记录 ModelRequestPrepared
+4. ContextManager 按 Token Budget 选择完整 Turn
+5. 记录 ContextPrepared 与 ModelRequestPrepared
 6. 调用 LanguageModel.stream
 7. 持久化并组装 ModelChunk
 8. 根据模型结果分支：
@@ -222,7 +222,7 @@ LLM 只能生成决策；Tool 才能读取文件或操作外部系统。工具�
 
 ### 30 秒介绍
 
-> 我用 Kotlin 实现了一个 Agent Runtime，而不是简单封装模型 API。核心是一个按 Session、Turn、Step、Attempt 运行的 Agent Loop：模型可以返回答案或者请求工具，工具结果会进入下一次模型判断。运行事实通过追加式 SessionEvent 保存，再投影成模型上下文；模型、工具和存储都通过接口隔离。目前已经实现流式输出、工具调用、重试、超时、取消、JSONL 恢复和 Token 成本统计。
+> 我用 Kotlin 实现了一个 Agent Runtime，而不是简单封装模型 API。核心是一个按 Session、Turn、Step、Attempt 运行的 Agent Loop：模型可以返回答案或者请求工具，工具结果会进入下一次模型判断。运行事实通过追加式 SessionEvent 保存，Context Manager 在容量预算内选择完整 Turn 并生成可重建的模型输入；模型、工具和存储都通过接口隔离。目前已经实现流式输出、工具调用、重试、超时、取消、JSONL 恢复、Context Budget 和 Token 成本统计。
 
 ### 2 分钟介绍
 
@@ -304,4 +304,4 @@ Runtime 最清楚每个模型请求的 Turn、Step、Attempt、模型身份和�
 
 > Agent Runtime 是 Agent 系统的执行内核。再接入 HTTP、数据库、认证、任务调度、隔离和监控后，才构成能够对外提供服务的 Agent System。
 
-进一步的实现细节见[开发与架构学习指南](development-guide.md)，商业计量见 [Token Usage 文档](token-usage.md)。
+进一步的实现细节见[开发与架构学习指南](development-guide.md)，长期状态与模型输入规划见 [Memory 与 Context Management 架构](memory-context-architecture.md)，商业计量见 [Token Usage 文档](token-usage.md)。
