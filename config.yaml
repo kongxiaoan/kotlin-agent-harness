@@ -1,3 +1,9 @@
+identity:
+# CLI 本地身份；HTTP 服务必须由认证结果提供，不能信任请求正文
+  tenant-id: local-tenant
+  user-id: local-user
+  agent-id: kotlin-agent
+
 model:
   provider: deepseek
   api-key-env: DEEPSEEK_API_KEY
@@ -5,13 +11,37 @@ model:
   base-url: https://api.deepseek.com
   connect-timeout-seconds: 10
   request-timeout-seconds: 60
+# SSE 已连接但长时间没有任何数据时中止本次模型调用
+  stream-idle-timeout-seconds: 30
+# 模型总上下文窗口；输入预算会扣除输出上限和安全余量
+  context-window-tokens: 1000000
+  max-output-tokens: 8192
+  context-safety-margin-tokens: 2048
+# 价格是请求发生时写入 Session 的快照；调价时必须修改 version 和费率
+  pricing:
+    version: deepseek-v4-flash-2026-08-19-cny
+    currency: CNY
+    input-per-million: "1.00"
+    cache-read-per-million: "0.02"
+    cache-write-per-million: "0"
+    output-per-million: "2.00"
+  retry:
+    max-retries: 2
+    initial-delay-ms: 500
+    max-delay-ms: 4000
 
 agent:
-#可配置的 Turn 最大 Step 数，防止模型无限调用工具
+# 可配置的 Turn 最大 Step 数，防止模型无限调用工具
   max-steps-per-turn: 8
+# 包含所有模型和工具调用的 Turn 总超时
+  turn-timeout-seconds: 120
 
 session:
-  path: .runtime/session.jsonl
+  directory: .runtime/sessions
+
+memory:
+  path: .runtime/memory.json
+  write-max-chars: 4096
 
 workspace:
   root: .

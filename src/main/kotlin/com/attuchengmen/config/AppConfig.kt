@@ -1,7 +1,14 @@
 package com.attuchengmen.config
 
+import com.attuchengmen.agent.model.ModelPricing
+import com.attuchengmen.agent.model.ModelRetryPolicy
+import com.attuchengmen.agent.identity.AgentId
+import com.attuchengmen.agent.identity.AgentIdentity
+import com.attuchengmen.agent.identity.TenantId
+import com.attuchengmen.agent.identity.UserId
 import org.snakeyaml.engine.v2.api.Load
 import org.snakeyaml.engine.v2.api.LoadSettings
+import java.math.BigDecimal
 import java.net.URI
 import java.nio.file.Files
 import java.nio.file.Path
@@ -9,9 +16,12 @@ import java.time.Duration
 
 /** 应用入口组装 Agent Runtime 所需的非敏感配置。 */
 data class AppConfig(
+    val identity: AgentIdentity,
     val model: ModelConfig,
     val agent: AgentConfig,
-    val sessionPath: Path,
+    val sessionDirectory: Path,
+    val memoryPath: Path,
+    val memoryWriteMaxChars: Int,
     val workspaceRoot: Path,
     val readFileMaxBytes: Int,
 )
@@ -19,9 +29,10 @@ data class AppConfig(
 /** Agent Loop 的部署限制。 */
 data class AgentConfig(
     val maxStepsPerTurn: Int,
+    val turnTimeout: Duration,
 )
 
-/** 模型 Adapter 的部署配置；[apiKeyEnv] 是环境变量名而不是密钥。 */
+/** 模型 Adapter 的部署配置；[apiKeyEnv] 是环境变量名，[pricing] 是请求时价格快照。 */
 data class ModelConfig(
     val provider: String,
     val apiKeyEnv: String,
@@ -29,6 +40,12 @@ data class ModelConfig(
     val baseUri: URI,
     val connectTimeout: Duration,
     val requestTimeout: Duration,
+    val streamIdleTimeout: Duration,
+    val contextWindowTokens: Int,
+    val maxOutputTokens: Int,
+    val contextSafetyMarginTokens: Int,
+    val pricing: ModelPricing,
+    val retryPolicy: ModelRetryPolicy,
 )
 
 /** YAML 配置无法安全映射为受支持的应用配置。 */
@@ -53,7 +70,10 @@ object AppConfigLoader {
             throw AppConfigException("cannot load config $path", error)
         }
         val root = ConfigNode.mapping(document, "config")
-        root.requireOnly("model", "agent", "session", "workspace")
+        root.requireOnly("identity", "model", "agent", "session", "memory", "workspace")
+
+        val identity = root.child("identity")
+        identity.requireOnly("tenant-id", "user-id", "agent-id")
 
         val model = root.child("model")
         model.requireOnly(
@@ -63,17 +83,41 @@ object AppConfigLoader {
             "base-url",
             "connect-timeout-seconds",
             "request-timeout-seconds",
+            "stream-idle-timeout-seconds",
+            "context-window-tokens",
+            "max-output-tokens",
+            "context-safety-margin-tokens",
+            "pricing",
+            "retry",
         )
+        val pricing = model.child("pricing")
+        pricing.requireOnly(
+            "version",
+            "currency",
+            "input-per-million",
+            "cache-read-per-million",
+            "cache-write-per-million",
+            "output-per-million",
+        )
+        val retry = model.child("retry")
+        retry.requireOnly("max-retries", "initial-delay-ms", "max-delay-ms")
         val session = root.child("session")
-        session.requireOnly("path")
+        session.requireOnly("directory")
+        val memory = root.child("memory")
+        memory.requireOnly("path", "write-max-chars")
         val workspace = root.child("workspace")
         workspace.requireOnly("root", "read-file-max-bytes")
         val agent = root.child("agent")
-        agent.requireOnly("max-steps-per-turn")
+        agent.requireOnly("max-steps-per-turn", "turn-timeout-seconds")
 
         val configDirectory = path.toAbsolutePath().normalize().parent
             ?: throw AppConfigException("config path must have a parent directory")
         return AppConfig(
+            identity = AgentIdentity(
+                tenantId = TenantId(identity.string("tenant-id")),
+                userId = UserId(identity.string("user-id")),
+                agentId = AgentId(identity.string("agent-id")),
+            ),
             model = ModelConfig(
                 provider = model.string("provider"),
                 apiKeyEnv = model.string("api-key-env"),
@@ -81,11 +125,24 @@ object AppConfigLoader {
                 baseUri = model.uri("base-url"),
                 connectTimeout = Duration.ofSeconds(model.positiveLong("connect-timeout-seconds")),
                 requestTimeout = Duration.ofSeconds(model.positiveLong("request-timeout-seconds")),
+                streamIdleTimeout = Duration.ofSeconds(model.positiveLong("stream-idle-timeout-seconds")),
+                contextWindowTokens = model.positiveInt("context-window-tokens"),
+                maxOutputTokens = model.positiveInt("max-output-tokens"),
+                contextSafetyMarginTokens = model.nonNegativeInt("context-safety-margin-tokens"),
+                pricing = pricing.modelPricing(),
+                retryPolicy = ModelRetryPolicy(
+                    maxRetries = retry.nonNegativeInt("max-retries"),
+                    initialDelay = Duration.ofMillis(retry.positiveLong("initial-delay-ms")),
+                    maxDelay = Duration.ofMillis(retry.positiveLong("max-delay-ms")),
+                ),
             ),
             agent = AgentConfig(
                 maxStepsPerTurn = agent.positiveInt("max-steps-per-turn"),
+                turnTimeout = Duration.ofSeconds(agent.positiveLong("turn-timeout-seconds")),
             ),
-            sessionPath = resolvePath(configDirectory, session.string("path")),
+            sessionDirectory = resolvePath(configDirectory, session.string("directory")),
+            memoryPath = resolvePath(configDirectory, memory.string("path")),
+            memoryWriteMaxChars = memory.positiveInt("write-max-chars"),
             workspaceRoot = resolvePath(configDirectory, workspace.string("root")),
             readFileMaxBytes = workspace.positiveInt("read-file-max-bytes"),
         )
@@ -130,10 +187,46 @@ private class ConfigNode(
         return value.toInt()
     }
 
+    fun nonNegativeInt(key: String): Int {
+        val value = required(key)
+        val number = value as? Number
+            ?: throw AppConfigException("$location.$key must be a non-negative integer")
+        val result = number.toLong()
+        if (result < 0 || result > Int.MAX_VALUE || number.toDouble() != result.toDouble()) {
+            throw AppConfigException("$location.$key must be a non-negative integer")
+        }
+        return result.toInt()
+    }
+
     fun uri(key: String): URI = try {
         URI(string(key))
     } catch (error: IllegalArgumentException) {
         throw AppConfigException("$location.$key must be a valid URI", error)
+    }
+
+    fun modelPricing(): ModelPricing = try {
+        ModelPricing(
+            version = string("version"),
+            currency = string("currency"),
+            inputPerMillion = decimal("input-per-million"),
+            cacheReadPerMillion = decimal("cache-read-per-million"),
+            cacheWritePerMillion = decimal("cache-write-per-million"),
+            outputPerMillion = decimal("output-per-million"),
+        )
+    } catch (error: AppConfigException) {
+        throw error
+    } catch (error: IllegalArgumentException) {
+        throw AppConfigException("$location is invalid: ${error.message}", error)
+    }
+
+    private fun decimal(key: String): BigDecimal {
+        val value = try {
+            BigDecimal(string(key))
+        } catch (error: NumberFormatException) {
+            throw AppConfigException("$location.$key must be a decimal string", error)
+        }
+        if (value < BigDecimal.ZERO) throw AppConfigException("$location.$key must not be negative")
+        return value
     }
 
     private fun required(key: String): Any? =

@@ -2,6 +2,8 @@ package com.attuchengmen.agent.tool
 
 import com.attuchengmen.agent.model.ToolCall
 import com.attuchengmen.agent.model.ToolDefinition
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 
 /** 请求的工具名没有对应注册。 */
 class UnknownToolException(
@@ -33,6 +35,10 @@ class ToolRegistry(
     }
 
     /** 将原始参数交给名称匹配的工具。 */
-    fun execute(call: ToolCall): String =
-        (toolsByName[call.name] ?: throw UnknownToolException(call.name)).execute(call.arguments)
+    suspend fun execute(call: ToolCall, context: ToolExecutionContext): String {
+        currentCoroutineContext().ensureActive()
+        val result = (toolsByName[call.name] ?: throw UnknownToolException(call.name)).execute(call.arguments, context)
+        currentCoroutineContext().ensureActive()
+        return result
+    }
 }

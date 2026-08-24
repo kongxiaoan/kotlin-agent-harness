@@ -50,7 +50,7 @@ class ReadFileTool(
 
     private val workspaceRoot = workspaceRoot.toRealPath()
 
-    override fun execute(arguments: String): String {
+    override suspend fun execute(arguments: String, context: ToolExecutionContext): String {
         val input = decodeArguments(arguments)
         val target = resolveTarget(input.path)
         val bytes = readBounded(target)

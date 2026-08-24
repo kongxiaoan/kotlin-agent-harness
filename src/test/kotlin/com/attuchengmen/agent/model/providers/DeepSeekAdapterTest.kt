@@ -4,11 +4,20 @@ import com.attuchengmen.agent.message.AssistantMessage
 import com.attuchengmen.agent.message.ToolCallMessage
 import com.attuchengmen.agent.message.ToolResultMessage
 import com.attuchengmen.agent.message.UserMessage
+import com.attuchengmen.agent.model.ModelChunk
+import com.attuchengmen.agent.model.ModelFinishReason
 import com.attuchengmen.agent.model.ModelRequest
 import com.attuchengmen.agent.model.ModelResponse
+import com.attuchengmen.agent.model.ModelRetryPolicy
 import com.attuchengmen.agent.model.ToolCall
 import com.attuchengmen.agent.model.ToolDefinition
+import com.attuchengmen.agent.model.TokenUsage
 import com.sun.net.httpserver.HttpServer
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
@@ -21,8 +30,274 @@ import java.time.Duration
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class DeepSeekAdapterTest {
+    @Test
+    fun `trailing usage replaces earlier usage and keeps token buckets disjoint`() = withServer(
+        responseStatus = 200,
+        responseBody = listOf(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"done\"}}]}",
+            "",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":90,\"completion_tokens\":10,\"total_tokens\":100}}",
+            "",
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"prompt_cache_hit_tokens\":80,\"prompt_cache_miss_tokens\":20,\"total_tokens\":120,\"completion_tokens_details\":{\"reasoning_tokens\":5}}}",
+            "",
+            "data: [DONE]",
+            "",
+            "",
+        ).joinToString("\n"),
+    ) { server, received ->
+        val chunks = runBlocking {
+            DeepSeekAdapter(config(server))
+                .stream(ModelRequest(listOf(UserMessage("hello")), emptyList()))
+                .toList()
+        }
+
+        assertEquals(
+            listOf(
+                ModelChunk.TextDelta("done"),
+                ModelChunk.Usage(
+                    TokenUsage(
+                        inputTokens = 20,
+                        outputTokens = 20,
+                        cacheReadTokens = 80,
+                        reasoningTokens = 5,
+                    ),
+                ),
+                ModelChunk.Finished(
+                    ModelResponse.Answer(AssistantMessage("done")),
+                    ModelFinishReason.STOP,
+                ),
+            ),
+            chunks,
+        )
+        val body = Json.parseToJsonElement(received.body).jsonObject
+        assertTrue(body.getValue("stream_options").jsonObject.getValue("include_usage").jsonPrimitive.content.toBoolean())
+    }
+
+    @Test
+    fun `inconsistent DeepSeek usage is a protocol failure`() = withServer(
+        responseStatus = 200,
+        responseBody = listOf(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"prompt_cache_hit_tokens\":80,\"prompt_cache_miss_tokens\":30,\"total_tokens\":120}}",
+            "",
+            "data: [DONE]",
+            "",
+            "",
+        ).joinToString("\n"),
+    ) { server, _ ->
+        assertFailsWith<DeepSeekProtocolException> {
+            runBlocking {
+                DeepSeekAdapter(config(server))
+                    .stream(ModelRequest(listOf(UserMessage("hello")), emptyList()))
+                    .toList()
+            }
+        }
+    }
+
+    @Test
+    fun `empty max token response keeps usage and does not become a retryable empty response`() = withServer(
+        responseStatus = 200,
+        responseBody = listOf(
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120}}",
+            "",
+            "data: [DONE]",
+            "",
+            "",
+        ).joinToString("\n"),
+    ) { server, _ ->
+        val chunks = runBlocking {
+            DeepSeekAdapter(config(server))
+                .stream(ModelRequest(listOf(UserMessage("hello")), emptyList()))
+                .toList()
+        }
+
+        assertEquals(
+            listOf(
+                ModelChunk.Usage(TokenUsage(100, 20)),
+                ModelChunk.Finished(
+                    ModelResponse.Answer(AssistantMessage("")),
+                    ModelFinishReason.MAX_TOKENS,
+                ),
+            ),
+            chunks,
+        )
+    }
+
+    @Test
+    fun `usage is emitted before an unsupported terminal finish fails`() = withServer(
+        responseStatus = 200,
+        responseBody = listOf(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"blocked\"},\"finish_reason\":\"content_filter\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2,\"total_tokens\":12}}",
+            "",
+            "data: [DONE]",
+            "",
+            "",
+        ).joinToString("\n"),
+    ) { server, _ ->
+        val received = mutableListOf<ModelChunk>()
+
+        assertFailsWith<DeepSeekProtocolException> {
+            runBlocking {
+                DeepSeekAdapter(config(server))
+                    .stream(ModelRequest(listOf(UserMessage("hello")), emptyList()))
+                    .collect(received::add)
+            }
+        }
+
+        assertEquals(ModelChunk.Usage(TokenUsage(10, 2)), received.last())
+    }
+
+    @Test
+    fun `SSE heartbeat resets the idle timeout`() = withTimedSseServer(
+        fragments = List(6) { ": keep-alive\n\n" } + listOf(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"done\"}}]}\n\n",
+            "data: [DONE]\n\n",
+        ),
+        intervalMillis = 40,
+    ) { server ->
+        val chunks = runBlocking {
+            DeepSeekAdapter(config(server, streamIdleTimeout = Duration.ofMillis(200)))
+                .stream(ModelRequest(listOf(UserMessage("hello")), emptyList()))
+                .toList()
+        }
+
+        assertEquals(
+            ModelChunk.Finished(ModelResponse.Answer(AssistantMessage("done"))),
+            chunks.last(),
+        )
+    }
+
+    @Test
+    fun `caller cancellation is not translated to idle timeout`() = withServer(
+        responseStatus = 200,
+        responseBody = "",
+        keepOpenMillis = 250,
+    ) { server, _ ->
+        assertFailsWith<TimeoutCancellationException> {
+            runBlocking {
+                withTimeout(30) {
+                    DeepSeekAdapter(config(server, streamIdleTimeout = Duration.ofSeconds(2)))
+                        .stream(ModelRequest(listOf(UserMessage("hello")), emptyList()))
+                        .toList()
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `stalled SSE body fails with a retryable idle timeout`() = withServer(
+        responseStatus = 200,
+        responseBody = "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n",
+        keepOpenMillis = 250,
+    ) { server, _ ->
+        val failure = assertFailsWith<DeepSeekStreamIdleTimeoutException> {
+            runBlocking {
+                DeepSeekAdapter(config(server, streamIdleTimeout = Duration.ofMillis(30)))
+                    .stream(ModelRequest(listOf(UserMessage("hello")), emptyList()))
+                    .toList()
+            }
+        }
+
+        assertEquals(Duration.ofMillis(30), failure.timeout)
+        assertTrue(failure.retryable)
+    }
+
+    @Test
+    fun `stream ending without done is a retryable transport failure`() = withServer(
+        responseStatus = 200,
+        responseBody = "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n",
+    ) { server, _ ->
+        val failure = assertFailsWith<DeepSeekTransportException> {
+            runBlocking {
+                DeepSeekAdapter(config(server))
+                    .stream(ModelRequest(listOf(UserMessage("hello")), emptyList()))
+                    .toList()
+            }
+        }
+
+        assertTrue(failure.retryable)
+    }
+
+    @Test
+    fun `streaming tool call deltas preserve raw json arguments`() = withServer(
+        responseStatus = 200,
+        responseBody = listOf(
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\"\"}}]}}]}",
+            "",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\":\\\"README.md\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}",
+            "",
+            "data: [DONE]",
+            "",
+            "",
+        ).joinToString("\n"),
+    ) { server, received ->
+        val tool = ToolDefinition(
+            name = "read_file",
+            description = "Read a file.",
+            parameters = buildJsonObject { put("type", "object") },
+        )
+
+        val chunks = runBlocking {
+            DeepSeekAdapter(config(server))
+                .stream(ModelRequest(listOf(UserMessage("hello")), listOf(tool)))
+                .toList()
+        }
+
+        assertEquals(
+            listOf(
+                ModelChunk.ToolCallDelta(0, "call-1", "read_file", "{\"path\""),
+                ModelChunk.ToolCallDelta(0, "call-1", "read_file", ":\"README.md\"}"),
+                ModelChunk.Finished(
+                    ModelResponse.ToolRequest(
+                        ToolCall("call-1", "read_file", "{\"path\":\"README.md\"}"),
+                    ),
+                ),
+            ),
+            chunks,
+        )
+        assertTrue(received.body.contains("\"stream\":true"))
+    }
+
+    @Test
+    fun `streams text deltas and assembles the terminal answer`() = withServer(
+        responseStatus = 200,
+        responseBody = listOf(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hel\"},\"finish_reason\":null}]}",
+            "",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"lo\"},\"finish_reason\":\"stop\"}]}",
+            "",
+            "data: [DONE]",
+            "",
+            "",
+        ).joinToString("\n"),
+    ) { server, received ->
+        val chunks = runBlocking {
+            DeepSeekAdapter(config(server))
+                .stream(ModelRequest(listOf(UserMessage("hello")), emptyList()))
+                .toList()
+        }
+
+        assertEquals(
+            listOf(
+                ModelChunk.TextDelta("hel"),
+                ModelChunk.TextDelta("lo"),
+                ModelChunk.Finished(ModelResponse.Answer(AssistantMessage("hello"))),
+            ),
+            chunks,
+        )
+        assertTrue(received.body.contains("\"stream\":true"))
+    }
+
+    @Test
+    fun `http failure classification only retries transient statuses`() {
+        assertTrue(DeepSeekHttpException(429, "busy").retryable)
+        assertTrue(DeepSeekHttpException(503, "unavailable").retryable)
+        assertFalse(DeepSeekHttpException(401, "unauthorized").retryable)
+    }
+
     @Test
     fun `maps runtime request to DeepSeek protocol`() = withServer(
         responseStatus = 200,
@@ -36,7 +311,7 @@ class DeepSeekAdapterTest {
         )
         val adapter = DeepSeekAdapter(config(server))
 
-        val response = adapter.generate(
+        val response = runBlocking { adapter.generate(
             ModelRequest(
                 messages = listOf(
                     UserMessage("read it"),
@@ -44,14 +319,16 @@ class DeepSeekAdapterTest {
                     ToolResultMessage("call-1", "permission denied", isError = true),
                 ),
                 tools = listOf(tool),
+                maxOutputTokens = 2048,
             ),
-        )
+        ) }
 
         assertEquals(ModelResponse.Answer(AssistantMessage("done")), response)
         assertEquals("Bearer test-key", received.authorization)
         val body = Json.parseToJsonElement(received.body).jsonObject
         assertEquals("test-model", body.getValue("model").jsonPrimitive.content)
         assertEquals("disabled", body.getValue("thinking").jsonObject.getValue("type").jsonPrimitive.content)
+        assertEquals(2048, body.getValue("max_tokens").jsonPrimitive.content.toInt())
         val messages = body.getValue("messages").jsonArray
         assertEquals("user", messages[0].jsonObject.getValue("role").jsonPrimitive.content)
         assertEquals("I will read it.", messages[1].jsonObject.getValue("content").jsonPrimitive.content)
@@ -67,7 +344,9 @@ class DeepSeekAdapterTest {
     ) { server, _ ->
         val adapter = DeepSeekAdapter(config(server))
 
-        val response = adapter.generate(ModelRequest(listOf(UserMessage("read it")), emptyList()))
+        val response = runBlocking {
+            adapter.generate(ModelRequest(listOf(UserMessage("read it")), emptyList()))
+        }
 
         assertEquals(
             ModelResponse.ToolRequest(
@@ -84,24 +363,32 @@ class DeepSeekAdapterTest {
         responseBody = """{"error":{"message":"invalid credentials"}}""",
     ) { server, _ ->
         val failure = assertFailsWith<DeepSeekHttpException> {
-            DeepSeekAdapter(config(server)).generate(ModelRequest(listOf(UserMessage("hello")), emptyList()))
+            runBlocking {
+                DeepSeekAdapter(config(server)).generate(ModelRequest(listOf(UserMessage("hello")), emptyList()))
+            }
         }
 
         assertEquals(401, failure.statusCode)
         assertEquals(false, failure.message.orEmpty().contains("test-key"))
     }
 
-    private fun config(server: HttpServer) = DeepSeekConfig(
+    private fun config(
+        server: HttpServer,
+        streamIdleTimeout: Duration = Duration.ofSeconds(2),
+    ) = DeepSeekConfig(
         apiKey = "test-key",
         model = "test-model",
         baseUri = URI("http://127.0.0.1:${server.address.port}"),
         connectTimeout = Duration.ofSeconds(2),
         requestTimeout = Duration.ofSeconds(2),
+        streamIdleTimeout = streamIdleTimeout,
+        retryPolicy = ModelRetryPolicy(2, Duration.ofMillis(1), Duration.ofMillis(4)),
     )
 
     private fun withServer(
         responseStatus: Int,
         responseBody: String,
+        keepOpenMillis: Long = 0,
         block: (HttpServer, ReceivedRequest) -> Unit,
     ) {
         val received = ReceivedRequest()
@@ -110,12 +397,41 @@ class DeepSeekAdapterTest {
             received.authorization = exchange.requestHeaders.getFirst("Authorization")
             received.body = exchange.requestBody.bufferedReader().use { it.readText() }
             val bytes = responseBody.toByteArray()
-            exchange.sendResponseHeaders(responseStatus, bytes.size.toLong())
-            exchange.responseBody.use { it.write(bytes) }
+            exchange.sendResponseHeaders(responseStatus, if (keepOpenMillis > 0) 0 else bytes.size.toLong())
+            exchange.responseBody.use {
+                it.write(bytes)
+                it.flush()
+                if (keepOpenMillis > 0) Thread.sleep(keepOpenMillis)
+            }
         }
         server.start()
         try {
             block(server, received)
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    private fun withTimedSseServer(
+        fragments: List<String>,
+        intervalMillis: Long,
+        block: (HttpServer) -> Unit,
+    ) {
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/chat/completions") { exchange ->
+            exchange.requestBody.close()
+            exchange.sendResponseHeaders(200, 0)
+            exchange.responseBody.use { body ->
+                fragments.forEachIndexed { index, fragment ->
+                    body.write(fragment.toByteArray())
+                    body.flush()
+                    if (index < fragments.lastIndex) Thread.sleep(intervalMillis)
+                }
+            }
+        }
+        server.start()
+        try {
+            block(server)
         } finally {
             server.stop(0)
         }

@@ -25,7 +25,10 @@ object SessionProjector {
                 is AssistantMessageAdded -> AssistantMessage(event.content)
                 is ToolCallRequested -> ToolCallMessage(event.call, event.content)
                 is ToolResultAdded -> ToolResultMessage(event.callId, event.content, event.isError)
+                is ContextPrepared -> null
                 is ModelRequestPrepared -> null
+                is ModelRetryScheduled -> null
+                is ModelChunkReceived -> null
                 is TurnStarted -> null
                 is StepStarted -> null
                 is StepEnded -> null
@@ -34,18 +37,34 @@ object SessionProjector {
         }
 
     /** 根据请求边界之前的消息事实和已记录工具定义重建一次模型请求。 */
-    fun toRequest(events: List<SessionEvent>, turn: Int, step: Int): ModelRequest {
+    fun toRequest(events: List<SessionEvent>, turn: Int, step: Int, attempt: Int = 1): ModelRequest {
         val matches = events.withIndex().filter { (_, event) ->
-            event is ModelRequestPrepared && event.turn == turn && event.step == step
+            event is ModelRequestPrepared && event.turn == turn && event.step == step && event.attempt == attempt
         }
         require(matches.size == 1) {
-            "expected exactly one model request for turn $turn step $step, found ${matches.size}"
+            "expected exactly one model request for turn $turn step $step attempt $attempt, found ${matches.size}"
         }
         val boundary = matches.single()
         val event = boundary.value as ModelRequestPrepared
+        val contextMatches = events.subList(0, boundary.index).filterIsInstance<ContextPrepared>().filter {
+            it.turn == turn && it.step == step && it.attempt == attempt
+        }
+        require(contextMatches.size <= 1) {
+            "expected at most one context selection for turn $turn step $step attempt $attempt"
+        }
+        val messageEvents = contextMatches.singleOrNull()?.let { context ->
+            require(context.selectedEventRanges.zipWithNext().all { (left, right) ->
+                left.toSequence < right.fromSequence
+            }) { "context event ranges must be ordered and non-overlapping" }
+            context.selectedEventRanges.flatMap { range ->
+                require(range.toSequence < boundary.index + 1L) { "context selection must precede its model request" }
+                events.subList((range.fromSequence - 1).toInt(), range.toSequence.toInt())
+            }
+        } ?: events.subList(0, boundary.index)
         return ModelRequest(
-            messages = toMessages(events.subList(0, boundary.index)),
+            messages = toMessages(messageEvents),
             tools = event.tools.toList(),
+            maxOutputTokens = event.maxOutputTokens,
         )
     }
 }

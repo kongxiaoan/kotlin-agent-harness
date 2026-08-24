@@ -7,6 +7,7 @@ import kotlinx.serialization.json.put
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlinx.coroutines.runBlocking
 
 class ToolRegistryTest {
     @Test
@@ -14,7 +15,9 @@ class ToolRegistryTest {
         val tool = StubTool("read_file", "content")
         val registry = ToolRegistry(listOf(tool))
 
-        val result = registry.execute(ToolCall("call-1", "read_file", "{\"path\":\"README.md\"}"))
+        val result = runBlocking {
+            registry.execute(ToolCall("call-1", "read_file", "{\"path\":\"README.md\"}"), TEST_TOOL_CONTEXT)
+        }
 
         assertEquals("content", result)
         assertEquals(listOf("{\"path\":\"README.md\"}"), tool.arguments)
@@ -25,7 +28,7 @@ class ToolRegistryTest {
         val registry = ToolRegistry()
 
         val failure = assertFailsWith<UnknownToolException> {
-            registry.execute(ToolCall("call-1", "missing", "{}"))
+            runBlocking { registry.execute(ToolCall("call-1", "missing", "{}"), TEST_TOOL_CONTEXT) }
         }
 
         assertEquals("unknown tool \"missing\"", failure.message)
@@ -63,7 +66,7 @@ private class StubTool(
     )
     val arguments = mutableListOf<String>()
 
-    override fun execute(arguments: String): String {
+    override suspend fun execute(arguments: String, context: ToolExecutionContext): String {
         this.arguments.add(arguments)
         return result
     }

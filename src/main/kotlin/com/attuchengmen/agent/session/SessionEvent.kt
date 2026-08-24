@@ -2,6 +2,10 @@ package com.attuchengmen.agent.session
 
 import com.attuchengmen.agent.model.ToolCall
 import com.attuchengmen.agent.model.ToolDefinition
+import com.attuchengmen.agent.model.ModelChunk
+import com.attuchengmen.agent.model.ModelProfile
+import java.time.Duration
+import java.time.Instant
 
 /**
  * 阅读顺序 2：Session 中按发生顺序记录的运行事实。
@@ -38,15 +42,48 @@ data class ToolResultAdded(
     val isError: Boolean,
 ) : SessionEvent
 
+/** 一次模型请求选择的事实区间和估算预算，用于重建实际模型输入。 */
+data class ContextPrepared(
+    val turn: Int,
+    val step: Int,
+    val attempt: Int,
+    val selectedEventRanges: List<SessionEventRange>,
+    val estimatedInputTokens: Int,
+    val inputTokenBudget: Int,
+    val tokenEstimatorId: String,
+) : SessionEvent
+
 /**
  * 一次模型请求即将发送，并保存消息日志之外的模型可见工具定义。
  *
- * 该事件之前的消息事实与 [tools] 共同构成实际请求。
+ * [ContextPrepared] 存在时由其选择消息事实，否则使用该事件之前的全部消息事实；
+ * [tools] 和 [maxOutputTokens] 保存请求参数，[profile] 保存模型与价格快照。
  */
 data class ModelRequestPrepared(
     val turn: Int,
     val step: Int,
     val tools: List<ToolDefinition>,
+    val attempt: Int = 1,
+    val maxOutputTokens: Int? = null,
+    val profile: ModelProfile? = null,
+) : SessionEvent
+
+/** 一次可重试模型失败已经按 Provider 策略安排下一次请求。 */
+data class ModelRetryScheduled(
+    val turn: Int,
+    val step: Int,
+    val retry: Int,
+    val delayMillis: Long,
+    val failure: String,
+) : SessionEvent
+
+/** Provider 为一个模型请求 attempt 产生的原始流事件；Usage 同时记录 UTC 观测时间。 */
+data class ModelChunkReceived(
+    val turn: Int,
+    val step: Int,
+    val attempt: Int,
+    val chunk: ModelChunk,
+    val observedAt: Instant? = null,
 ) : SessionEvent
 
 /**
@@ -78,6 +115,20 @@ data class StepEnded(
 sealed interface TurnOutcome {
     /** Turn 已正常产生模型回复。 */
     data object Completed : TurnOutcome
+
+    /** 模型达到输出上限；返回内容可能是不完整的。 */
+    data object MaxTokens : TurnOutcome
+
+    /** Turn 因调用方取消而结束；取消不是业务失败。 */
+    data object Cancelled : TurnOutcome
+
+    /** 持久化加载发现进程在 Turn 完成前退出。 */
+    data object Interrupted : TurnOutcome
+
+    /** Turn 达到 Runtime 配置的总执行时间限制。 */
+    data class TimedOut(
+        val timeout: Duration,
+    ) : TurnOutcome
 
     /** Turn 因模型异常而结束。 */
     data class Failed(

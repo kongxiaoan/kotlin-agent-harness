@@ -1,13 +1,30 @@
 package com.attuchengmen.agent.tool
 
+import com.attuchengmen.agent.identity.AgentIdentity
 import com.attuchengmen.agent.model.ToolDefinition
+import com.attuchengmen.agent.session.SessionEventRange
+import com.attuchengmen.agent.session.SessionId
 
-/** Agent Runtime 可以按名称调用的一项同步能力。 */
+/** Runtime 为一次 Tool 调用提供的可信身份与事实来源。 */
+data class ToolExecutionContext(
+    val identity: AgentIdentity,
+    val sessionId: SessionId,
+    val turn: Int,
+    val step: Int,
+    val sourceEventRange: SessionEventRange,
+) {
+    init {
+        require(turn > 0) { "tool context turn must be positive" }
+        require(step > 0) { "tool context step must be positive" }
+    }
+}
+
+/** Agent Runtime 可以按名称调用的一项能力。 */
 interface Tool {
     val definition: ToolDefinition
 
-    /** 执行模型提供的原始 JSON 参数并返回模型可见文本。 */
-    fun execute(arguments: String): String
+    /** 执行模型参数；身份和来源只能从 [context] 读取。 */
+    suspend fun execute(arguments: String, context: ToolExecutionContext): String
 }
 
 /** 可以安全返回给模型并允许其修正请求的工具错误。 */

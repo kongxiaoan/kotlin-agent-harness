@@ -3,12 +3,14 @@ package com.attuchengmen.agent.model.providers
 import com.attuchengmen.agent.message.UserMessage
 import com.attuchengmen.agent.model.ModelRequest
 import com.attuchengmen.agent.model.ModelResponse
+import com.attuchengmen.agent.model.ModelRetryPolicy
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import java.net.URI
 import java.time.Duration
 import kotlin.test.Test
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
+import kotlinx.coroutines.runBlocking
 
 /** 仅在调用者显式提供 DeepSeek 凭据和模型时运行的真实 API 冒烟测试。 */
 class DeepSeekLiveTest {
@@ -25,15 +27,17 @@ class DeepSeekLiveTest {
                 baseUri = baseUri,
                 connectTimeout = Duration.ofSeconds(10),
                 requestTimeout = Duration.ofSeconds(60),
+                streamIdleTimeout = Duration.ofSeconds(30),
+                retryPolicy = ModelRetryPolicy(2, Duration.ofMillis(500), Duration.ofSeconds(4)),
             ),
         )
 
-        val response = adapter.generate(
+        val response = runBlocking { adapter.generate(
             ModelRequest(
                 messages = listOf(UserMessage("Reply with a short greeting.")),
                 tools = emptyList(),
             ),
-        )
+        ) }
 
         assertTrue(assertIs<ModelResponse.Answer>(response).message.content.isNotBlank())
     }

@@ -7,6 +7,6 @@ import com.attuchengmen.agent.model.ModelResponse
 
 /** 不访问外部服务、始终返回固定答案的本地模型实现。 */
 class NoopProvider : LanguageModel {
-    override fun generate(request: ModelRequest): ModelResponse =
+    override suspend fun generate(request: ModelRequest): ModelResponse =
         ModelResponse.Answer(AssistantMessage("上下文消息${request.messages} , 模型说 ${System.currentTimeMillis()}"))
 }
