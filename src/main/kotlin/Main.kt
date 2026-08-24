@@ -1,6 +1,9 @@
-import com.attuchengmen.TerminalStreamRenderer
+package com.attuchengmen
+
 import com.attuchengmen.agent.Agent
 import com.attuchengmen.agent.AgentOptions
+import com.attuchengmen.cli.CliCommand
+import com.attuchengmen.cli.CliCommandParser
 import com.attuchengmen.agent.context.ConservativeUtf8TokenEstimator
 import com.attuchengmen.agent.context.ContextManager
 import com.attuchengmen.agent.context.ContextWindow
@@ -11,8 +14,9 @@ import com.attuchengmen.agent.model.providers.DeepSeekAdapter
 import com.attuchengmen.agent.model.providers.DeepSeekConfig
 import com.attuchengmen.agent.runtime.AgentRuntimeService
 import com.attuchengmen.agent.runtime.RunState
-import com.attuchengmen.agent.session.JsonlFileSessionLog
 import com.attuchengmen.agent.session.Session
+import com.attuchengmen.agent.session.SessionFileRepository
+import com.attuchengmen.agent.session.SessionId
 import com.attuchengmen.agent.tool.ReadFileTool
 import com.attuchengmen.agent.tool.ToolRegistry
 import com.attuchengmen.config.AppConfig
@@ -20,30 +24,21 @@ import com.attuchengmen.config.AppConfigLoader
 import kotlinx.coroutines.CancellationException
 import java.nio.file.Path
 
-/** 从 YAML 和环境变量组装具体能力，并运行一次完整 Agent Turn。 */
+/** 从 YAML 和环境变量组装 Agent Runtime，并启动多 Session 交互循环。 */
 suspend fun main(args: Array<String>) {
     val configPath = Path.of(System.getenv("DS_HARNESS_CONFIG") ?: "config.yaml")
     val config = AppConfigLoader.load(configPath)
-    val task = args.joinToString(" ").ifBlank {
-        print("Task: ")
-        readlnOrNull().orEmpty()
-    }
-    require(task.isNotBlank()) { "task must not be blank" }
-
     val model = createModel(config)
     val memoryStore = JsonFileMemoryStore(config.memoryPath)
+    val sessionFiles = SessionFileRepository(config.sessionDirectory)
     val tools = ToolRegistry(
         listOf(
             ReadFileTool(config.workspaceRoot, config.readFileMaxBytes),
             MemoryWriteTool(memoryStore, config.memoryWriteMaxChars),
         ),
     )
-    val sessionLog = JsonlFileSessionLog(config.sessionPath)
     val runtime = AgentRuntimeService(
-        sessionFactory = { sessionId ->
-            require(sessionLog.sessionId == sessionId) { "CLI session id does not match persisted log" }
-            Session(sessionLog)
-        },
+        sessionFactory = { sessionId -> Session(sessionFiles.open(sessionId)) },
         agentFactory = { session ->
             Agent(
                 session,
@@ -66,22 +61,61 @@ suspend fun main(args: Array<String>) {
         },
     )
     runtime.use { runtime ->
-        val sessionId = runtime.openSession(sessionLog.sessionId)
-        val renderer = TerminalStreamRenderer(System.out)
-        runtime.subscribe(sessionId, renderer::onEvent).use {
-            try {
-                val run = runtime.awaitRun(runtime.startRun(sessionId, task))
-                when (val state = run.state) {
-                    is RunState.Completed -> renderer.finish(state.response)
-                    is RunState.MaxTokens -> renderer.finish(state.response)
-                    is RunState.Failed -> error(state.message)
-                    RunState.Cancelled -> throw CancellationException("agent run was cancelled")
-                    RunState.Running -> error("awaited agent run is still running")
-                }
-            } catch (error: Exception) {
-                renderer.finishFailure()
-                throw error
+        runChat(runtime, args.joinToString(" ").takeIf(String::isNotBlank))
+    }
+}
+
+/** 在当前 Session 连续提交消息，并处理 Session 控制命令。 */
+private suspend fun runChat(runtime: AgentRuntimeService, initialInput: String?) {
+    var sessionId = runtime.createSession()
+    var pendingInput = initialInput
+    println("Session: ${sessionId.value}")
+    println("Commands: /new, /session, /exit")
+    while (true) {
+        val input = pendingInput ?: run {
+            print("You: ")
+            System.out.flush()
+            readlnOrNull() ?: return
+        }
+        pendingInput = null
+        when (val command = CliCommandParser.parse(input)) {
+            null -> Unit
+            is CliCommand.Submit -> submit(runtime, sessionId, command.content)
+            CliCommand.NewSession -> {
+                sessionId = runtime.createSession()
+                println("Session: ${sessionId.value}")
             }
+            CliCommand.ShowSession -> println("Session: ${sessionId.value}")
+            CliCommand.Exit -> return
+            is CliCommand.Invalid -> println(command.message)
+        }
+    }
+}
+
+/** 提交一个 Turn，并把流事件和最终状态渲染到终端。 */
+private suspend fun submit(runtime: AgentRuntimeService, sessionId: SessionId, content: String) {
+    val renderer = TerminalStreamRenderer(System.out)
+    print("Agent: ")
+    System.out.flush()
+    runtime.subscribe(sessionId, renderer::onEvent).use {
+        try {
+            val run = runtime.awaitRun(runtime.startRun(sessionId, content))
+            when (val state = run.state) {
+                is RunState.Completed -> renderer.finish(state.response)
+                is RunState.MaxTokens -> renderer.finish(state.response)
+                is RunState.Failed -> {
+                    renderer.finishFailure()
+                    println("[error: ${state.message}]")
+                }
+                RunState.Cancelled -> {
+                    renderer.finishFailure()
+                    println("[cancelled]")
+                }
+                RunState.Running -> error("awaited agent run is still running")
+            }
+        } catch (error: CancellationException) {
+            renderer.finishFailure()
+            throw error
         }
     }
 }

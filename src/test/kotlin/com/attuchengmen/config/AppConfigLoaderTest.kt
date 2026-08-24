@@ -31,7 +31,7 @@ class AppConfigLoaderTest {
             assertEquals("CNY", config.model.pricing.currency)
             assertEquals(0, config.model.pricing.cacheReadPerMillion.compareTo("0.02".toBigDecimal()))
             assertEquals(2, config.model.retryPolicy.maxRetries)
-            assertEquals(root.resolve("data/session.jsonl"), config.sessionPath)
+            assertEquals(root.resolve("data/sessions"), config.sessionDirectory)
             assertEquals(root.resolve("data/memory.json"), config.memoryPath)
             assertEquals(4096, config.memoryWriteMaxChars)
             assertEquals(root, config.workspaceRoot)
@@ -89,7 +89,7 @@ class AppConfigLoaderTest {
                 initial-delay-ms: 500
                 max-delay-ms: 4000
             session:
-              path: data/session.jsonl
+              directory: data/sessions
             memory:
               path: data/memory.json
               write-max-chars: 4096

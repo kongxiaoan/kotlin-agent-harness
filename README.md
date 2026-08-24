@@ -24,6 +24,7 @@
 - 提供强制 tenant/user/agent Scope、来源追踪、版本冲突和遗忘语义的 MemoryStore；CLI 使用原子 JSON 快照持久化，并向主 LLM 注册由 Runtime 注入身份与来源的 `memory_write`。
 - Session 在持久化后发布实时事件，终端按 attempt 增量显示模型文本、标记失败重试且不重复最终答案。
 - `AgentRuntimeService` 在单进程内管理多个 Session 和异步 Run；同一 Session 拒绝并发 Run，不同 Session 可以并行。
+- CLI 支持当前 Session 多轮对话，并可通过 `/new` 创建和切换到独立持久化 Session。
 - 提供限制在工作区内、带大小上限的 `read_file` 工具。
 - 使用 SLF4J + Logback 输出运行日志，使用 kotlinx.serialization 处理 JSON。
 
@@ -36,11 +37,19 @@ Memory 快照路径也由 `config.yaml` 配置。`memory_write` 只有在新快�
 ```bash
 read -s DEEPSEEK_API_KEY
 export DEEPSEEK_API_KEY
-./gradlew run --args='读取 README.md 并总结项目用途'
+./gradlew run
 unset DEEPSEEK_API_KEY
 ```
 
-使用其他配置文件时设置 `DS_HARNESS_CONFIG=/absolute/path/config.yaml`。没有 `--args` 时，Main 会从终端读取一行任务。
+启动后直接输入消息即可连续对话。控制命令：
+
+```text
+/new      创建并切换到新 Session
+/session  显示当前 Session ID
+/exit     退出
+```
+
+`--args='第一条消息'` 可以提供启动后的首条消息，随后仍进入交互循环。使用其他配置文件时设置 `DS_HARNESS_CONFIG=/absolute/path/config.yaml`。
 
 ## 文件 Session
 
@@ -49,6 +58,8 @@ val session = Session(JsonlFileSessionLog(Path.of("data/session.jsonl")))
 ```
 
 每个 `SessionEventEnvelope` 占一行。重新构造 `JsonlFileSessionLog` 会恢复原 Session ID、序号、时间和事件；错误归属、跳号或损坏 JSON 会报告文件路径和行号，不会被静默忽略。
+
+CLI 的 `session.directory` 为每个 Session 保存独立 JSONL 文件。文件名由 Session ID 的 SHA-256 生成，Session ID 不能形成路径穿越；长期 Memory 仍由所有 Session 共享。
 
 当前 JSONL 格式版本为 `1`。引入事件信封之前生成的预发布日志不包含可靠 Session ID 和时间，系统会明确拒绝，不会猜测或静默迁移；需要保留时应先归档旧文件。
 

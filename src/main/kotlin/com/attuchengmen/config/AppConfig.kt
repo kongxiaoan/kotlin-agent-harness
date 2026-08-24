@@ -19,7 +19,7 @@ data class AppConfig(
     val identity: AgentIdentity,
     val model: ModelConfig,
     val agent: AgentConfig,
-    val sessionPath: Path,
+    val sessionDirectory: Path,
     val memoryPath: Path,
     val memoryWriteMaxChars: Int,
     val workspaceRoot: Path,
@@ -102,7 +102,7 @@ object AppConfigLoader {
         val retry = model.child("retry")
         retry.requireOnly("max-retries", "initial-delay-ms", "max-delay-ms")
         val session = root.child("session")
-        session.requireOnly("path")
+        session.requireOnly("directory")
         val memory = root.child("memory")
         memory.requireOnly("path", "write-max-chars")
         val workspace = root.child("workspace")
@@ -140,7 +140,7 @@ object AppConfigLoader {
                 maxStepsPerTurn = agent.positiveInt("max-steps-per-turn"),
                 turnTimeout = Duration.ofSeconds(agent.positiveLong("turn-timeout-seconds")),
             ),
-            sessionPath = resolvePath(configDirectory, session.string("path")),
+            sessionDirectory = resolvePath(configDirectory, session.string("directory")),
             memoryPath = resolvePath(configDirectory, memory.string("path")),
             memoryWriteMaxChars = memory.positiveInt("write-max-chars"),
             workspaceRoot = resolvePath(configDirectory, workspace.string("root")),

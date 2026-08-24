@@ -8,6 +8,8 @@
 
 `AgentRuntimeService` 是 CLI 和未来 HTTP Adapter 共同使用的应用服务。它为 Session 和异步 Run 分配不透明 ID，允许不同 Session 并行运行，并明确拒绝同一 Session 的并发 Run。等待方取消只停止等待，不会取消后台 Run；显式 `cancelRun` 或 Runtime 关闭才会传播取消。
 
+CLI 启动后创建一个 Session，并把每行普通输入作为新的 Turn 提交，因此 Agent 能在同一 Session 中连续使用历史 Context。`/new` 创建并切换到新 Session，`/session` 显示当前 ID，`/exit` 退出。`SessionFileRepository` 把每个 Session 路由到独立 JSONL 文件；模型、工具和 MemoryStore 在 Runtime 生命周期内共享，Session 对话事实保持隔离。
+
 ## 当前数据流
 
 ```text
@@ -42,20 +44,21 @@ Agent.submit(content)
 6. `session/Session.kt`：分配信封元数据并封装存储实现。
 7. `session/SessionEventJson.kt`：领域信封和文件 DTO 的显式映射。
 8. `session/JsonlFileSessionLog.kt`：JSONL 追加、加载和顺序校验。
-9. `session/SessionRecovery.kt`：崩溃尾部如何补齐工具、Step 和 Turn。
-10. `session/SessionProjector.kt`：事实如何转换成模型上下文。
-11. `model/LanguageModel.kt`：核心代码依赖的模型端口。
-12. `model/ModelAccounting.kt`：Token、停止原因和价格快照。
-13. `session/SessionUsageReporter.kt`：从事实日志计算商业用量。
-14. `memory/Memory.kt`：长期记忆的 Scope、来源、版本和命令类型。
-15. `memory/MemoryStore.kt`：作用域隔离、检索、替换和遗忘语义。
-16. `memory/JsonFileMemoryStore.kt`：可重启恢复和真正删除正文的本地快照实现。
-17. `memory/MemoryWriteTool.kt`：主 LLM 如何提交不含身份参数的记忆候选。
-18. `tool/`：工具执行上下文、注册表和受工作区限制的文件读取实现。
-19. `Agent.kt`：驱动 Turn、Step、模型和工具。
-20. `runtime/AgentRuntimeService.kt`：管理进程内 Session、Run 和异步生命周期。
-21. Session 测试：验证信封、格式往返、恢复和损坏文件失败。
-22. 其余测试：验证投影、Memory Store 和 Agent 编排行为。
+9. `session/SessionFileRepository.kt`：多个 Session 如何安全映射到独立文件。
+10. `session/SessionRecovery.kt`：崩溃尾部如何补齐工具、Step 和 Turn。
+11. `session/SessionProjector.kt`：事实如何转换成模型上下文。
+12. `model/LanguageModel.kt`：核心代码依赖的模型端口。
+13. `model/ModelAccounting.kt`：Token、停止原因和价格快照。
+14. `session/SessionUsageReporter.kt`：从事实日志计算商业用量。
+15. `memory/Memory.kt`：长期记忆的 Scope、来源、版本和命令类型。
+16. `memory/MemoryStore.kt`：作用域隔离、检索、替换和遗忘语义。
+17. `memory/JsonFileMemoryStore.kt`：可重启恢复和移除旧正文的本地快照实现。
+18. `memory/MemoryWriteTool.kt`：主 LLM 如何提交不含身份参数的记忆候选。
+19. `tool/`：工具执行上下文、注册表和受工作区限制的文件读取实现。
+20. `Agent.kt`：驱动 Turn、Step、模型和工具。
+21. `runtime/AgentRuntimeService.kt`：管理进程内 Session、Run 和异步生命周期。
+22. Session 测试：验证信封、格式往返、恢复和损坏文件失败。
+23. 其余测试：验证投影、Memory Store 和 Agent 编排行为。
 
 阅读时对每个模块回答：它拥有什么状态、谁能修改状态、输入输出是什么、失败如何传播、它依赖哪些模块。
 

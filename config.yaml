@@ -37,7 +37,7 @@ agent:
   turn-timeout-seconds: 120
 
 session:
-  path: .runtime/session.jsonl
+  directory: .runtime/sessions
 
 memory:
   path: .runtime/memory.json
