@@ -1,6 +1,7 @@
 package com.attuchengmen.agent.model.providers
 
 import com.attuchengmen.agent.message.AssistantMessage
+import com.attuchengmen.agent.message.SystemMessage
 import com.attuchengmen.agent.message.ToolCallMessage
 import com.attuchengmen.agent.message.ToolResultMessage
 import com.attuchengmen.agent.message.UserMessage
@@ -314,6 +315,7 @@ class DeepSeekAdapterTest {
         val response = runBlocking { adapter.generate(
             ModelRequest(
                 messages = listOf(
+                    SystemMessage("stored user facts"),
                     UserMessage("read it"),
                     ToolCallMessage(call, content = "I will read it."),
                     ToolResultMessage("call-1", "permission denied", isError = true),
@@ -330,9 +332,11 @@ class DeepSeekAdapterTest {
         assertEquals("disabled", body.getValue("thinking").jsonObject.getValue("type").jsonPrimitive.content)
         assertEquals(2048, body.getValue("max_tokens").jsonPrimitive.content.toInt())
         val messages = body.getValue("messages").jsonArray
-        assertEquals("user", messages[0].jsonObject.getValue("role").jsonPrimitive.content)
-        assertEquals("I will read it.", messages[1].jsonObject.getValue("content").jsonPrimitive.content)
-        assertEquals("Error: permission denied", messages[2].jsonObject.getValue("content").jsonPrimitive.content)
+        assertEquals("system", messages[0].jsonObject.getValue("role").jsonPrimitive.content)
+        assertEquals("stored user facts", messages[0].jsonObject.getValue("content").jsonPrimitive.content)
+        assertEquals("user", messages[1].jsonObject.getValue("role").jsonPrimitive.content)
+        assertEquals("I will read it.", messages[2].jsonObject.getValue("content").jsonPrimitive.content)
+        assertEquals("Error: permission denied", messages[3].jsonObject.getValue("content").jsonPrimitive.content)
         assertEquals("read_file", body.getValue("tools").jsonArray[0].jsonObject
             .getValue("function").jsonObject.getValue("name").jsonPrimitive.content)
     }

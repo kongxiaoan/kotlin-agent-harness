@@ -6,6 +6,7 @@ import com.attuchengmen.agent.message.ToolCallMessage
 import com.attuchengmen.agent.message.ToolResultMessage
 import com.attuchengmen.agent.message.UserMessage
 import com.attuchengmen.agent.model.ModelRequest
+import com.attuchengmen.agent.memory.MemoryContextFormatter
 
 /**
  * 阅读顺序 4：把 Session 事实投影为下一次模型调用需要的消息。
@@ -52,17 +53,23 @@ object SessionProjector {
         require(contextMatches.size <= 1) {
             "expected at most one context selection for turn $turn step $step attempt $attempt"
         }
-        val messageEvents = contextMatches.singleOrNull()?.let { context ->
-            require(context.selectedEventRanges.zipWithNext().all { (left, right) ->
+        val context = contextMatches.singleOrNull()
+        val messageEvents = context?.let { selected ->
+            require(selected.selectedEventRanges.zipWithNext().all { (left, right) ->
                 left.toSequence < right.fromSequence
             }) { "context event ranges must be ordered and non-overlapping" }
-            context.selectedEventRanges.flatMap { range ->
+            selected.selectedEventRanges.flatMap { range ->
                 require(range.toSequence < boundary.index + 1L) { "context selection must precede its model request" }
                 events.subList((range.fromSequence - 1).toInt(), range.toSequence.toInt())
             }
         } ?: events.subList(0, boundary.index)
         return ModelRequest(
-            messages = toMessages(messageEvents),
+            messages = buildList {
+                if (context != null && context.selectedMemories.isNotEmpty()) {
+                    add(MemoryContextFormatter.toMessage(context.selectedMemories))
+                }
+                addAll(toMessages(messageEvents))
+            },
             tools = event.tools.toList(),
             maxOutputTokens = event.maxOutputTokens,
         )

@@ -2,6 +2,7 @@ package com.attuchengmen.agent.model.providers
 
 import com.attuchengmen.agent.message.AssistantMessage
 import com.attuchengmen.agent.message.Message
+import com.attuchengmen.agent.message.SystemMessage
 import com.attuchengmen.agent.message.ToolCallMessage
 import com.attuchengmen.agent.message.ToolResultMessage
 import com.attuchengmen.agent.message.UserMessage
@@ -413,6 +414,11 @@ class DeepSeekAdapter(
 }
 
 private fun toDeepSeekMessage(message: Message): JsonObject = when (message) {
+    is SystemMessage -> buildJsonObject {
+        put("role", "system")
+        put("content", message.content)
+    }
+
     is UserMessage -> buildJsonObject {
         put("role", "user")
         put("content", message.content)

@@ -34,6 +34,7 @@ class AppConfigLoaderTest {
             assertEquals(root.resolve("data/sessions"), config.sessionDirectory)
             assertEquals(root.resolve("data/memory.json"), config.memoryPath)
             assertEquals(4096, config.memoryWriteMaxChars)
+            assertEquals(20, config.memoryRetrievalLimit)
             assertEquals(root, config.workspaceRoot)
             assertEquals(1_048_576, config.readFileMaxBytes)
             assertEquals(8, config.agent.maxStepsPerTurn)
@@ -93,6 +94,7 @@ class AppConfigLoaderTest {
             memory:
               path: data/memory.json
               write-max-chars: 4096
+              retrieval-limit: 20
             workspace:
               root: .
               read-file-max-bytes: 1048576

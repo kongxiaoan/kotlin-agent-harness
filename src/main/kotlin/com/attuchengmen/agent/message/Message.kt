@@ -10,6 +10,11 @@ import com.attuchengmen.agent.model.ToolCall
  */
 sealed interface Message
 
+/** Runtime 提供且优先于对话历史的系统上下文。 */
+data class SystemMessage(
+    val content: String,
+) : Message
+
 /** 模型历史中的用户消息。 */
 data class UserMessage(
     val content: String,

@@ -64,6 +64,10 @@ class JsonFileMemoryStore(
         index.search(query)
     }
 
+    override suspend fun list(query: MemoryListQuery): List<MemoryRecord> = synchronized(lock) {
+        index.list(query)
+    }
+
     override suspend fun replace(memory: ReplaceMemory): MemoryRecord = synchronized(lock) {
         val change = index.replace(memory, clock.instant())
         persist(change.index)

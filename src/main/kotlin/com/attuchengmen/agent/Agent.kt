@@ -3,6 +3,7 @@ package com.attuchengmen.agent
 import com.attuchengmen.agent.message.AssistantMessage
 import com.attuchengmen.agent.context.ContextManager
 import com.attuchengmen.agent.identity.AgentIdentity
+import com.attuchengmen.agent.memory.MemoryContextSource
 import com.attuchengmen.agent.model.LanguageModel
 import com.attuchengmen.agent.model.ModelChunk
 import com.attuchengmen.agent.model.ModelChunkAssembler
@@ -81,8 +82,15 @@ class Agent(
     private val clock: Clock = Clock.systemUTC(),
     private val contextManager: ContextManager? = null,
     private val identity: AgentIdentity = AgentIdentity.isolated(session.id),
+    private val memoryContextSource: MemoryContextSource? = null,
 ) {
     private val turnMutex = Mutex()
+
+    init {
+        require(memoryContextSource == null || contextManager != null) {
+            "memory context source requires a context manager"
+        }
+    }
 
     /**
      * 提交用户内容并返回模型回复。
@@ -193,10 +201,11 @@ class Agent(
 
     /** 只重试 Provider 明确标记为瞬时失败的模型请求。 */
     private suspend fun generateWithRetry(turn: Int, step: Int): ModelCallResult {
+        val memories = memoryContextSource?.load().orEmpty()
         var retry = 0
         while (true) {
             val attempt = retry + 1
-            val contextPlan = contextManager?.build(session.envelopes, turn, tools.definitions)
+            val contextPlan = contextManager?.build(session.envelopes, turn, tools.definitions, memories)
             val request = contextPlan?.request ?: ModelRequest(
                 messages = SessionProjector.toMessages(session.events),
                 tools = tools.definitions,
@@ -211,6 +220,7 @@ class Agent(
                         estimatedInputTokens = contextPlan.estimatedInputTokens,
                         inputTokenBudget = contextPlan.inputTokenBudget,
                         tokenEstimatorId = contextPlan.tokenEstimatorId,
+                        selectedMemories = contextPlan.selectedMemories,
                     ),
                 )
             }

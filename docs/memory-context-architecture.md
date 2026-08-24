@@ -4,7 +4,7 @@
 
 本文定义 Kotlin Agent Runtime 的长期记忆与上下文管理架构，并区分当前实现与后续目标。
 
-当前项目已经完成 Context Management V1、Memory Store 领域基础、原子 JSON 快照和安全的 LLM 写入工具：长期记忆使用 tenant/user/agent 强制 Scope、Session 来源、版本化替换和遗忘墓碑；`memory_write` 只接收候选内容和类型，身份与来源由 Runtime 注入。CLI 已激活持久化写入，Memory 尚未接入 Context。
+当前项目已经完成 Context Management V1、Memory Store 领域基础、原子 JSON 快照、安全的 LLM 写入工具和 Memory Context V1：长期记忆使用 tenant/user/agent 强制 Scope、Session 来源、版本化替换和遗忘墓碑；每次模型调用读取当前 Scope 内最近更新的 active memories，按 Token Budget 选取，并把模型实际看到的版本快照记录到 Session。
 
 ## 一句话模型
 
@@ -149,7 +149,7 @@ MemorySource = SessionId + SessionEventRange
 
 `InMemoryMemoryStore` 支持 create、get、文本 search、replace 和 forget。所有读取和写入都要求完整 Scope；Scope 不匹配与不存在使用相同结果，避免泄漏其他用户是否拥有某个 Memory ID。replace 和 forget 必须提交 `expectedVersion`，过期写入明确冲突。forget 删除可检索正文，只保留内部版本墓碑，旧版本不能恢复已遗忘内容。
 
-`JsonFileMemoryStore` 使用原子文件替换保存当前索引，重启后恢复 active 记录和遗忘墓碑。它不采用追加日志，因为 replace 和 forget 必须从磁盘移除旧正文；完整 Memory Event Sourcing 与隐私删除需要另行设计。该实现不协调多进程写入，只适合当前单进程 CLI。当前文本 search 也只是确定性基础，不代表最终检索质量；Memory 尚未进入 `ContextPlan`。
+`JsonFileMemoryStore` 使用原子文件替换保存当前索引，重启后恢复 active 记录和遗忘墓碑。它不采用追加日志，因为 replace 和 forget 必须从磁盘移除旧正文；完整 Memory Event Sourcing 与隐私删除需要另行设计。该实现不协调多进程写入，只适合当前单进程 CLI。当前 list/search 只是确定性的最近更新时间与文本匹配基础，不代表最终语义检索质量。
 
 ## Memory 的事实归属
 
@@ -203,7 +203,7 @@ inputBudget = contextWindow - reservedOutput - safetyMargin
 turn / step / attempt
 model profile
 selected event ranges
-memory id + version + model-visible snapshot + integrity hash
+memory id + kind + version + model-visible snapshot
 compaction id + version
 token budget and measured input tokens
 tool definition snapshot
@@ -244,13 +244,14 @@ Memory 系统不能只验证“数据库返回了结果”。至少需要评估�
 | 当前模块 | 已提供的基础 | 后续变化 |
 |---|---|---|
 | `SessionLog` / `SessionEventStore` | 有序运行事实和游标 | 保持 Session 聚合职责 |
-| `SessionProjector` | 投影消息，并按已记录区间重建历史请求 | 后续接收 Memory 与 Compaction 快照 |
-| `ContextManager` | 按预算选择当前 Turn 与最近完整历史 | 后续统一多来源候选排序 |
-| `ContextPrepared` | 保存事件区间、估算量、预算和估算器版本 | 后续增加 Memory 与 Compaction 版本快照 |
-| `Agent.generateWithRetry` | 每个 Attempt 前重新构建 Context | 保持调用级重建语义 |
+| `SessionProjector` | 按已记录区间和 Memory 快照重建历史请求 | 后续接收 Compaction 快照 |
+| `MemoryContextSource` | 按 Scope 和更新时间读取 active 候选 | 后续替换为可评估的混合检索与 Ranking |
+| `ContextManager` | 按预算选择 Memory、当前 Turn 与最近完整历史 | 后续统一更多来源的候选排序 |
+| `ContextPrepared` | 保存事件区间、Memory 快照、估算量、预算和估算器版本 | 后续增加 Compaction 版本快照与完整性校验 |
+| `Agent.generateWithRetry` | 每个 Step 读取一次 Memory，同 Step Attempt 复用候选 | 保持重试输入的 Memory 版本稳定 |
 | `TokenUsage` | Provider 返回的事后精确计量 | 与调用前保守估算分别保留 |
 
-当前已实现确定性的 Session Context V1、内存与本地持久化 `MemoryStore`，以及已激活的 LLM 写入工具；Consolidator、Memory Context 注入、数据库实现与 Compactor 仍是后续职责，不应一次性全部创建。
+当前已实现确定性的 Session Context V1、内存与本地持久化 `MemoryStore`、已激活的 LLM 写入工具，以及最近更新时间排序的 Memory Context V1；语义 Ranking、Consolidator、数据库实现与 Compactor 仍是后续职责，不应一次性全部创建。
 
 ## 推荐实施顺序
 
@@ -264,7 +265,7 @@ Store、安全写入链和 CLI 本地持久化已完成：主 LLM 可以自主�
 
 ### 3. Memory 接入 Context
 
-下一切片：Memory Retrieval 产生 `ContextCandidate`，与历史 Turn 一起参与 Token Budget，并记录实际使用的 Memory ID、版本和内容快照。
+已完成 V1：`MemoryContextSource` 强制 Scope 并读取最近 active memories；`ContextManager` 逐条执行 Token Budget 选择；`ContextPrepared` 记录实际使用的 ID、类型、版本和内容快照，`SessionProjector` 可离线重建请求。Memory 作为 JSON 数据进入系统消息，不被声明为指令。当前排序不考虑查询相关性，配置的 `retrieval-limit` 只限制候选数量。
 
 ### 4. 后置提取与 Compaction
 

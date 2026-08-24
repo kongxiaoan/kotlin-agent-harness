@@ -4,6 +4,10 @@ import com.attuchengmen.agent.message.AssistantMessage
 import com.attuchengmen.agent.message.ToolCallMessage
 import com.attuchengmen.agent.message.ToolResultMessage
 import com.attuchengmen.agent.message.UserMessage
+import com.attuchengmen.agent.memory.MemoryContextEntry
+import com.attuchengmen.agent.memory.MemoryContextFormatter
+import com.attuchengmen.agent.memory.MemoryId
+import com.attuchengmen.agent.memory.MemoryKind
 import com.attuchengmen.agent.model.ToolCall
 import com.attuchengmen.agent.model.ModelRequest
 import com.attuchengmen.agent.model.ToolDefinition
@@ -108,12 +112,24 @@ class SessionProjectorTest {
                 estimatedInputTokens = 10,
                 inputTokenBudget = 20,
                 tokenEstimatorId = "test-v1",
+                selectedMemories = listOf(
+                    MemoryContextEntry(MemoryId("memory-1"), MemoryKind.SEMANTIC, "User prefers Kotlin", 2),
+                ),
             ),
             ModelRequestPrepared(turn = 2, step = 1, tools = emptyList(), maxOutputTokens = 30),
         )
 
         assertEquals(
-            ModelRequest(listOf(UserMessage("current")), emptyList(), maxOutputTokens = 30),
+            ModelRequest(
+                listOf(
+                    MemoryContextFormatter.toMessage(
+                        listOf(MemoryContextEntry(MemoryId("memory-1"), MemoryKind.SEMANTIC, "User prefers Kotlin", 2)),
+                    ),
+                    UserMessage("current"),
+                ),
+                emptyList(),
+                maxOutputTokens = 30,
+            ),
             SessionProjector.toRequest(events, turn = 2, step = 1),
         )
     }

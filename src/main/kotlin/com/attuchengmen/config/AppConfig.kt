@@ -22,6 +22,7 @@ data class AppConfig(
     val sessionDirectory: Path,
     val memoryPath: Path,
     val memoryWriteMaxChars: Int,
+    val memoryRetrievalLimit: Int,
     val workspaceRoot: Path,
     val readFileMaxBytes: Int,
 )
@@ -104,7 +105,7 @@ object AppConfigLoader {
         val session = root.child("session")
         session.requireOnly("directory")
         val memory = root.child("memory")
-        memory.requireOnly("path", "write-max-chars")
+        memory.requireOnly("path", "write-max-chars", "retrieval-limit")
         val workspace = root.child("workspace")
         workspace.requireOnly("root", "read-file-max-bytes")
         val agent = root.child("agent")
@@ -143,6 +144,7 @@ object AppConfigLoader {
             sessionDirectory = resolvePath(configDirectory, session.string("directory")),
             memoryPath = resolvePath(configDirectory, memory.string("path")),
             memoryWriteMaxChars = memory.positiveInt("write-max-chars"),
+            memoryRetrievalLimit = memory.positiveInt("retrieval-limit"),
             workspaceRoot = resolvePath(configDirectory, workspace.string("root")),
             readFileMaxBytes = workspace.positiveInt("read-file-max-bytes"),
         )

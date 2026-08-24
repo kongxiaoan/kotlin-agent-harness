@@ -2,11 +2,15 @@ package com.attuchengmen.agent.context
 
 import com.attuchengmen.agent.message.AssistantMessage
 import com.attuchengmen.agent.message.Message
+import com.attuchengmen.agent.message.SystemMessage
 import com.attuchengmen.agent.message.ToolCallMessage
 import com.attuchengmen.agent.message.ToolResultMessage
 import com.attuchengmen.agent.message.UserMessage
 import com.attuchengmen.agent.model.ModelRequest
 import com.attuchengmen.agent.model.ToolDefinition
+import com.attuchengmen.agent.memory.MemoryContextEntry
+import com.attuchengmen.agent.memory.MemoryContextFormatter
+import com.attuchengmen.agent.memory.MemoryRecord
 import com.attuchengmen.agent.session.SessionEventEnvelope
 import com.attuchengmen.agent.session.SessionEventRange
 import com.attuchengmen.agent.session.SessionProjector
@@ -53,15 +57,16 @@ class ContextWindowExceededException(
 data class ContextPlan(
     val request: ModelRequest,
     val selectedEventRanges: List<SessionEventRange>,
+    val selectedMemories: List<MemoryContextEntry>,
     val estimatedInputTokens: Int,
     val inputTokenBudget: Int,
     val tokenEstimatorId: String,
 )
 
 /**
- * 从 Session 事实中选择当前 Turn 和连续的最近完整历史 Turn。
+ * 从候选 Memory 与 Session 事实中构建受 Token Budget 约束的模型请求。
  *
- * 当前 Turn 永不裁剪；历史从近到远加入，首个不适配预算的 Turn 会终止选择。
+ * 当前 Turn 永不裁剪；Memory 逐条适配；历史从近到远加入，首个超限 Turn 终止选择。
  */
 class ContextManager(
     private val window: ContextWindow,
@@ -71,6 +76,7 @@ class ContextManager(
         envelopes: List<SessionEventEnvelope>,
         currentTurn: Int,
         tools: List<ToolDefinition>,
+        memories: List<MemoryRecord> = emptyList(),
     ): ContextPlan {
         require(currentTurn > 0) { "currentTurn must be positive" }
         require(envelopes.isNotEmpty()) { "context requires session events" }
@@ -79,15 +85,28 @@ class ContextManager(
         val segments = turnSegments(envelopes, currentTurn)
         val current = segments.last()
         var selected = listOf(current)
-        var request = request(envelopes, selected, tools)
+        var selectedMemories = emptyList<MemoryContextEntry>()
+        var request = request(envelopes, selected, tools, selectedMemories)
         var estimatedTokens = estimate(request)
         if (estimatedTokens > window.inputTokenBudget) {
             throw ContextWindowExceededException(estimatedTokens, window.inputTokenBudget)
         }
 
+        for (memory in memories) {
+            val snapshot = MemoryContextEntry(memory.id, memory.kind, memory.content, memory.version)
+            val candidateMemories = selectedMemories + snapshot
+            val candidateRequest = request(envelopes, selected, tools, candidateMemories)
+            val candidateTokens = estimate(candidateRequest)
+            if (candidateTokens <= window.inputTokenBudget) {
+                selectedMemories = candidateMemories
+                request = candidateRequest
+                estimatedTokens = candidateTokens
+            }
+        }
+
         for (history in segments.dropLast(1).asReversed()) {
             val candidate = listOf(history) + selected
-            val candidateRequest = request(envelopes, candidate, tools)
+            val candidateRequest = request(envelopes, candidate, tools, selectedMemories)
             val candidateTokens = estimate(candidateRequest)
             if (candidateTokens > window.inputTokenBudget) break
             selected = candidate
@@ -98,6 +117,7 @@ class ContextManager(
         return ContextPlan(
             request = request,
             selectedEventRanges = selected.map { it.toEventRange(envelopes) },
+            selectedMemories = selectedMemories,
             estimatedInputTokens = estimatedTokens,
             inputTokenBudget = window.inputTokenBudget,
             tokenEstimatorId = tokenEstimator.id,
@@ -137,12 +157,16 @@ class ContextManager(
         envelopes: List<SessionEventEnvelope>,
         selected: List<IndexRange>,
         tools: List<ToolDefinition>,
+        memories: List<MemoryContextEntry>,
     ): ModelRequest {
         val events = selected.flatMap { range ->
             envelopes.subList(range.fromIndex, range.toIndex + 1).map(SessionEventEnvelope::event)
         }
         return ModelRequest(
-            messages = SessionProjector.toMessages(events),
+            messages = buildList {
+                if (memories.isNotEmpty()) add(MemoryContextFormatter.toMessage(memories))
+                addAll(SessionProjector.toMessages(events))
+            },
             tools = tools.toList(),
             maxOutputTokens = window.maxOutputTokens,
         )
@@ -186,6 +210,7 @@ object ConservativeUtf8TokenEstimator : InputTokenEstimator {
     }
 
     private fun Message.estimatedBytes(): Int = when (this) {
+        is SystemMessage -> content.utf8Bytes()
         is UserMessage -> content.utf8Bytes()
         is AssistantMessage -> content.utf8Bytes()
         is ToolCallMessage -> call.id.utf8Bytes() + call.name.utf8Bytes() +

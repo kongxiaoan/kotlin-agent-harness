@@ -57,11 +57,7 @@ class MemoryWriteTool(
         val input = decodeArguments(arguments)
         store.create(
             NewMemory(
-                scope = MemoryScope(
-                    context.identity.tenantId,
-                    context.identity.userId,
-                    context.identity.agentId,
-                ),
+                scope = MemoryScope.from(context.identity),
                 kind = input.kind.toDomain(),
                 content = input.content,
                 sources = listOf(MemorySource(context.sessionId, context.sourceEventRange)),
@@ -99,14 +95,26 @@ private data class MemoryWriteArguments(
     val kind: ToolMemoryKind,
 )
 
+/**
+ * 工具记忆类型。
+ *
+ * 用于区分 Agent 在执行工具过程中涉及的不同记忆形态：
+ * - SEMANTIC：语义记忆，保存事实、概念、知识等相对稳定的信息。
+ * - EPISODIC：情景记忆，保存过去发生的具体事件、经历和交互记录。
+ * - PROCEDURAL：程序性记忆，保存完成某类任务的方法、步骤、策略或操作经验。
+ */
 @Serializable
 private enum class ToolMemoryKind {
+
+    /** 语义记忆：描述“知道什么”，例如用户偏好、领域知识、事实信息。 */
     @SerialName("semantic")
     SEMANTIC,
 
+    /** 情景记忆：描述“发生过什么”，例如某次会话、任务执行或历史事件。 */
     @SerialName("episodic")
     EPISODIC,
 
+    /** 程序性记忆：描述“应该怎么做”，例如工作流程、操作步骤和执行策略。 */
     @SerialName("procedural")
     PROCEDURAL,
 }

@@ -9,6 +9,8 @@ import com.attuchengmen.agent.context.ContextManager
 import com.attuchengmen.agent.context.ContextWindow
 import com.attuchengmen.agent.model.LanguageModel
 import com.attuchengmen.agent.memory.JsonFileMemoryStore
+import com.attuchengmen.agent.memory.MemoryContextSource
+import com.attuchengmen.agent.memory.MemoryScope
 import com.attuchengmen.agent.memory.MemoryWriteTool
 import com.attuchengmen.agent.model.providers.DeepSeekAdapter
 import com.attuchengmen.agent.model.providers.DeepSeekConfig
@@ -57,6 +59,11 @@ suspend fun main(args: Array<String>) {
                     ConservativeUtf8TokenEstimator,
                 ),
                 identity = config.identity,
+                memoryContextSource = MemoryContextSource(
+                    memoryStore,
+                    MemoryScope.from(config.identity),
+                    config.memoryRetrievalLimit,
+                ),
             )
         },
     )

@@ -3,6 +3,20 @@ package com.attuchengmen.agent
 import com.attuchengmen.agent.context.ContextManager
 import com.attuchengmen.agent.context.ContextWindow
 import com.attuchengmen.agent.context.InputTokenEstimator
+import com.attuchengmen.agent.identity.AgentId
+import com.attuchengmen.agent.identity.AgentIdentity
+import com.attuchengmen.agent.identity.TenantId
+import com.attuchengmen.agent.identity.UserId
+import com.attuchengmen.agent.memory.InMemoryMemoryStore
+import com.attuchengmen.agent.memory.MemoryContextEntry
+import com.attuchengmen.agent.memory.MemoryContextFormatter
+import com.attuchengmen.agent.memory.MemoryContextSource
+import com.attuchengmen.agent.memory.MemoryKind
+import com.attuchengmen.agent.memory.MemoryListQuery
+import com.attuchengmen.agent.memory.MemoryScope
+import com.attuchengmen.agent.memory.MemorySource
+import com.attuchengmen.agent.memory.MemoryStore
+import com.attuchengmen.agent.memory.NewMemory
 import com.attuchengmen.agent.message.AssistantMessage
 import com.attuchengmen.agent.message.ToolCallMessage
 import com.attuchengmen.agent.message.ToolResultMessage
@@ -24,6 +38,7 @@ import com.attuchengmen.agent.session.ModelRequestPrepared
 import com.attuchengmen.agent.session.ModelRetryScheduled
 import com.attuchengmen.agent.session.ModelChunkReceived
 import com.attuchengmen.agent.session.Session
+import com.attuchengmen.agent.session.SessionEventRange
 import com.attuchengmen.agent.session.SessionProjector
 import com.attuchengmen.agent.session.StepEnded
 import com.attuchengmen.agent.session.StepStarted
@@ -97,6 +112,45 @@ class AgentTest {
     }
 
     @Test
+    fun `scoped memory is selected logged and reconstructable`() = runBlocking {
+        val session = Session()
+        val identity = AgentIdentity(TenantId("tenant-1"), UserId("user-1"), AgentId("agent-1"))
+        val store = InMemoryMemoryStore()
+        val memory = store.create(
+            NewMemory(
+                scope = MemoryScope.from(identity),
+                kind = MemoryKind.SEMANTIC,
+                content = "The user writes Kotlin.",
+                sources = listOf(MemorySource(session.id, SessionEventRange(1, 1))),
+            ),
+        )
+        val model = RecordingModel(ModelResponse.Answer(AssistantMessage("noted")))
+        val estimator = object : InputTokenEstimator {
+            override val id = "message-count-v1"
+            override fun estimate(request: ModelRequest): Int = request.messages.size * 10
+        }
+        val agent = Agent(
+            session,
+            model,
+            ToolRegistry(),
+            TEST_OPTIONS,
+            contextManager = ContextManager(ContextWindow(100, 10), estimator),
+            identity = identity,
+            memoryContextSource = MemoryContextSource(store, MemoryScope.from(identity), limit = 10),
+        )
+
+        agent.submit("Which language do I use?")
+
+        val snapshot = MemoryContextEntry(memory.id, memory.kind, memory.content, memory.version)
+        assertEquals(
+            listOf(MemoryContextFormatter.toMessage(listOf(snapshot)), UserMessage("Which language do I use?")),
+            model.requests.single().messages,
+        )
+        assertEquals(listOf(snapshot), session.events.filterIsInstance<ContextPrepared>().single().selectedMemories)
+        assertEquals(model.requests.single(), SessionProjector.toRequest(session.events, turn = 1, step = 1))
+    }
+
+    @Test
     fun `stream chunks are logged and assembled into one assistant answer`() = runBlocking {
         val session = Session()
         val model = object : LanguageModel {
@@ -159,6 +213,44 @@ class AgentTest {
             session.events.filterIsInstance<ModelRetryScheduled>(),
         )
         assertEquals(2, session.events.filterIsInstance<ModelRequestPrepared>().size)
+    }
+
+    @Test
+    fun `model retries reuse the same memory candidates`() = runBlocking {
+        val session = Session()
+        val scope = MemoryScope(TenantId("tenant-1"), UserId("user-1"), AgentId("agent-1"))
+        val backingStore = InMemoryMemoryStore()
+        val store = object : MemoryStore by backingStore {
+            var listCalls = 0
+
+            override suspend fun list(query: MemoryListQuery) = backingStore.list(query).also { listCalls += 1 }
+        }
+        val model = object : LanguageModel {
+            override val retryPolicy = ModelRetryPolicy(1, Duration.ofMillis(1), Duration.ofMillis(1))
+            var requests = 0
+
+            override suspend fun generate(request: ModelRequest): ModelResponse {
+                requests += 1
+                if (requests == 1) throw ModelRequestException("retry", retryable = true)
+                return ModelResponse.Answer(AssistantMessage("done"))
+            }
+        }
+        val estimator = object : InputTokenEstimator {
+            override val id = "message-count-v1"
+            override fun estimate(request: ModelRequest): Int = request.messages.size
+        }
+        val agent = Agent(
+            session,
+            model,
+            ToolRegistry(),
+            TEST_OPTIONS,
+            contextManager = ContextManager(ContextWindow(100, 10), estimator),
+            memoryContextSource = MemoryContextSource(store, scope, limit = 10),
+        )
+
+        agent.submit("hello")
+
+        assertEquals(1, store.listCalls)
     }
 
     @Test

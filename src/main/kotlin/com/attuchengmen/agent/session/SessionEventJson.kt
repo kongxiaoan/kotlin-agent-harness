@@ -1,6 +1,9 @@
 package com.attuchengmen.agent.session
 
 import com.attuchengmen.agent.message.AssistantMessage
+import com.attuchengmen.agent.memory.MemoryContextEntry
+import com.attuchengmen.agent.memory.MemoryId
+import com.attuchengmen.agent.memory.MemoryKind
 import com.attuchengmen.agent.model.ModelChunk
 import com.attuchengmen.agent.model.ModelFinishReason
 import com.attuchengmen.agent.model.ModelPricing
@@ -104,7 +107,28 @@ private data class StoredContextPrepared(
     val estimatedInputTokens: Int,
     val inputTokenBudget: Int,
     val tokenEstimatorId: String,
+    val selectedMemories: List<StoredMemoryContextEntry> = emptyList(),
 ) : StoredSessionEvent
+
+@Serializable
+private data class StoredMemoryContextEntry(
+    val id: String,
+    val kind: StoredMemoryKind,
+    val content: String,
+    val version: Long,
+)
+
+@Serializable
+private enum class StoredMemoryKind {
+    @SerialName("semantic")
+    SEMANTIC,
+
+    @SerialName("episodic")
+    EPISODIC,
+
+    @SerialName("procedural")
+    PROCEDURAL,
+}
 
 @Serializable
 private data class StoredSessionEventRange(
@@ -297,6 +321,9 @@ private fun SessionEvent.toStored(): StoredSessionEvent = when (this) {
         estimatedInputTokens,
         inputTokenBudget,
         tokenEstimatorId,
+        selectedMemories.map { memory ->
+            StoredMemoryContextEntry(memory.id.value, memory.kind.toStored(), memory.content, memory.version)
+        },
     )
     is ModelRequestPrepared -> StoredModelRequestPrepared(
         turn = turn,
@@ -342,6 +369,9 @@ private fun StoredSessionEvent.toDomain(): SessionEvent = when (this) {
         estimatedInputTokens,
         inputTokenBudget,
         tokenEstimatorId,
+        selectedMemories.map { memory ->
+            MemoryContextEntry(MemoryId(memory.id), memory.kind.toDomain(), memory.content, memory.version)
+        },
     )
     is StoredModelRequestPrepared -> ModelRequestPrepared(
         turn = turn,
@@ -441,6 +471,18 @@ private fun StoredModelFinishReason.toDomain(): ModelFinishReason = when (this) 
     StoredModelFinishReason.STOP -> ModelFinishReason.STOP
     StoredModelFinishReason.TOOL_CALLS -> ModelFinishReason.TOOL_CALLS
     StoredModelFinishReason.MAX_TOKENS -> ModelFinishReason.MAX_TOKENS
+}
+
+private fun MemoryKind.toStored(): StoredMemoryKind = when (this) {
+    MemoryKind.SEMANTIC -> StoredMemoryKind.SEMANTIC
+    MemoryKind.EPISODIC -> StoredMemoryKind.EPISODIC
+    MemoryKind.PROCEDURAL -> StoredMemoryKind.PROCEDURAL
+}
+
+private fun StoredMemoryKind.toDomain(): MemoryKind = when (this) {
+    StoredMemoryKind.SEMANTIC -> MemoryKind.SEMANTIC
+    StoredMemoryKind.EPISODIC -> MemoryKind.EPISODIC
+    StoredMemoryKind.PROCEDURAL -> MemoryKind.PROCEDURAL
 }
 
 private fun ModelResponse.toStored(): StoredModelResponse = when (this) {

@@ -4,7 +4,7 @@
 
 本项目最终实现一个可测试、可恢复、可扩展的 Kotlin Agent Runtime。它负责持续驱动模型与工具协作，并管理上下文、Session、执行状态、取消和错误；具体模型和业务工具由外部实现。
 
-当前阶段支持 DeepSeek 文本与单工具 SSE、可取消的多 Step 工具执行、进程内多 Session/Run 服务、JSONL Session 持久化、确定性的 Context Budget、作用域化 MemoryStore、原子 JSON Memory 快照，以及主 LLM 自主调用的 `memory_write`；暂不支持 Memory Context 注入、Compaction、数据库 Store、并行工具调用和插件框架。
+当前阶段支持 DeepSeek 文本与单工具 SSE、可取消的多 Step 工具执行、进程内多 Session/Run 服务、JSONL Session 持久化、确定性的 Context Budget、作用域化 MemoryStore、原子 JSON Memory 快照、主 LLM 自主调用的 `memory_write`，以及可重建的 Memory Context 注入；暂不支持语义 Ranking、Compaction、数据库 Store、并行工具调用和插件框架。
 
 `AgentRuntimeService` 是 CLI 和未来 HTTP Adapter 共同使用的应用服务。它为 Session 和异步 Run 分配不透明 ID，允许不同 Session 并行运行，并明确拒绝同一 Session 的并发 Run。等待方取消只停止等待，不会取消后台 Run；显式 `cancelRun` 或 Runtime 关闭才会传播取消。
 
@@ -15,7 +15,8 @@ CLI 启动后创建一个 Session，并把每行普通输入作为新的 Turn �
 ```text
 Agent.submit(content)
   → Step 1：记录用户消息并调用模型
-  → ContextManager 按预算选择完整 Turn
+  → 按身份 Scope 读取最近更新的 active memories
+  → ContextManager 按预算选择 Memory 和完整 Turn
   → 调用前记录 ContextPrepared 与 ModelRequestPrepared
   → 模型请求工具：ToolRegistry.execute
   → 记录 ToolCall 与 ToolResult
@@ -54,11 +55,12 @@ Agent.submit(content)
 16. `memory/MemoryStore.kt`：作用域隔离、检索、替换和遗忘语义。
 17. `memory/JsonFileMemoryStore.kt`：可重启恢复和移除旧正文的本地快照实现。
 18. `memory/MemoryWriteTool.kt`：主 LLM 如何提交不含身份参数的记忆候选。
-19. `tool/`：工具执行上下文、注册表和受工作区限制的文件读取实现。
-20. `Agent.kt`：驱动 Turn、Step、模型和工具。
-21. `runtime/AgentRuntimeService.kt`：管理进程内 Session、Run 和异步生命周期。
-22. Session 测试：验证信封、格式往返、恢复和损坏文件失败。
-23. 其余测试：验证投影、Memory Store 和 Agent 编排行为。
+19. `memory/MemoryContextSource.kt`：作用域化 Memory 候选如何进入 Context 选择。
+20. `tool/`：工具执行上下文、注册表和受工作区限制的文件读取实现。
+21. `Agent.kt`：驱动 Turn、Step、模型和工具。
+22. `runtime/AgentRuntimeService.kt`：管理进程内 Session、Run 和异步生命周期。
+23. Session 测试：验证信封、格式往返、恢复和损坏文件失败。
+24. 其余测试：验证投影、Memory Store 和 Agent 编排行为。
 
 阅读时对每个模块回答：它拥有什么状态、谁能修改状态、输入输出是什么、失败如何传播、它依赖哪些模块。
 
@@ -75,9 +77,9 @@ SessionEvent Log = 唯一事实源
 Message List     = 可重新计算的投影
 ```
 
-`ContextPrepared` 记录一次 Attempt 选择的 Session 序号区间、估算 Token、输入预算和估算器版本。`ModelRequestPrepared` 记录请求边界、输出上限和当时可见的工具定义。请求消息不重复保存，而是从所选事实区间重建；因此 Session Log 可以还原每个 Step 实际发送的 `ModelRequest`。
+`ContextPrepared` 记录一次 Attempt 选择的 Session 序号区间、Memory 的 ID/类型/版本/内容快照、估算 Token、输入预算和估算器版本。`ModelRequestPrepared` 记录请求边界、输出上限和当时可见的工具定义。请求消息不重复保存，而是从所选事实区间和 Memory 快照重建；因此 Session Log 可以还原每个 Attempt 实际发送的 `ModelRequest`，无需重新查询当前 MemoryStore。
 
-`ContextManager` 每次模型调用前重新运行。它固定保留当前 Turn，再从近到远加入连续的完整历史 Turn；第一个历史 Turn 超出预算后停止，避免跳过近期历史或拆断 ToolCall/ToolResult。当前 UTF-8 保守估算器用于发送前容量保护，不等于 Provider 返回的精确计费用量。
+`MemoryContextSource` 在每个 Step 的首次模型请求前按完整身份 Scope 读取候选，同一 Step 的重试复用该快照。`ContextManager` 固定保留当前 Turn，再逐条加入候选 Memory，最后从近到远加入连续的完整历史 Turn；放不下的 Memory 会跳过，第一个放不下的历史 Turn 会终止历史选择。当前 V1 只按更新时间排序，不宣称具备语义相关性；UTF-8 保守估算器用于发送前容量保护，不等于 Provider 返回的精确计费用量。
 
 ### 为什么使用 sealed interface
 
@@ -95,7 +97,7 @@ Agent Runtime 只需要“完整请求产生一个结果”的能力，不应该
 
 `ToolException` 表示参数错误、未知工具和文件读取失败等可预期结果。Agent 将其记录为 `ToolResultAdded(isError = true)` 并继续下一 Step，让模型修正调用。其他异常包装为不暴露内部细节的 `UnexpectedToolException`，记录稳定错误文本后终止 Turn。
 
-所有工具调用都会收到 Runtime 构造的 `ToolExecutionContext`，其中身份、Session、Turn、Step 和来源事件区间不能来自模型 JSON。`memory_write` 只允许 LLM 提交候选内容和类型，Scope 与 `MemorySource` 从该上下文生成。CLI 使用 `JsonFileMemoryStore`；只有新快照落盘成功后工具才返回成功。
+所有工具调用都会收到 Runtime 构造的 `ToolExecutionContext`，其中身份、Session、Turn、Step 和来源事件区间不能来自模型 JSON。`memory_write` 只允许 LLM 提交候选内容和类型，Scope 与 `MemorySource` 从该上下文生成。CLI 使用 `JsonFileMemoryStore`；只有新快照落盘成功后工具才返回成功。读取出的 Memory 以 JSON 数据放入 `SystemMessage`，并明确要求模型不要把值当成指令；这能降低权限混淆，但不能代替写入治理和提示注入评估。
 
 Memory 文件保存当前状态而不是追加历史。replace 会移除旧正文，forget 只留下 Scope、ID 和递增版本墓碑，防止过期写入恢复数据。快照通过同目录临时文件和原子替换避免半写状态，但不协调多个进程；HTTP 多实例部署必须改用具备事务和条件更新的数据库 Store。
 
@@ -200,6 +202,6 @@ Problem
 - 一个模型响应中的并行工具调用
 - Retry-After、随机抖动和无限重试模式
 - 插件系统和 Subagent
-- Memory Context 检索、Consolidator、自动后置提取、数据库实现、自动 Compaction 和多来源 Context 排序；目标职责与实施顺序见 [Memory 与 Context Management 架构](memory-context-architecture.md)
+- 语义 Memory Ranking、Consolidator、自动后置提取、数据库实现、自动 Compaction 和多来源 Context 排序；目标职责与实施顺序见 [Memory 与 Context Management 架构](memory-context-architecture.md)
 
 这些会在核心行为出现真实需要时逐步加入，而不是提前设计。

@@ -4,6 +4,7 @@ import com.attuchengmen.agent.model.ToolCall
 import com.attuchengmen.agent.model.ToolDefinition
 import com.attuchengmen.agent.model.ModelChunk
 import com.attuchengmen.agent.model.ModelProfile
+import com.attuchengmen.agent.memory.MemoryContextEntry
 import java.time.Duration
 import java.time.Instant
 
@@ -42,7 +43,7 @@ data class ToolResultAdded(
     val isError: Boolean,
 ) : SessionEvent
 
-/** 一次模型请求选择的事实区间和估算预算，用于重建实际模型输入。 */
+/** 一次模型请求选择的事实区间、Memory 快照和估算预算，用于重建实际模型输入。 */
 data class ContextPrepared(
     val turn: Int,
     val step: Int,
@@ -51,6 +52,7 @@ data class ContextPrepared(
     val estimatedInputTokens: Int,
     val inputTokenBudget: Int,
     val tokenEstimatorId: String,
+    val selectedMemories: List<MemoryContextEntry> = emptyList(),
 ) : SessionEvent
 
 /**

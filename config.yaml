@@ -42,6 +42,8 @@ session:
 memory:
   path: .runtime/memory.json
   write-max-chars: 4096
+# 每次模型调用最多读取的最近 active memories；最终仍受 Context Token Budget 限制
+  retrieval-limit: 20
 
 workspace:
   root: .

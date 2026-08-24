@@ -25,6 +25,8 @@ interface MemoryStore {
 
     suspend fun search(query: MemoryQuery): List<MemoryRecord>
 
+    suspend fun list(query: MemoryListQuery): List<MemoryRecord>
+
     suspend fun replace(memory: ReplaceMemory): MemoryRecord
 
     suspend fun forget(memory: ForgetMemory)
@@ -50,6 +52,10 @@ class InMemoryMemoryStore(
 
     override suspend fun search(query: MemoryQuery): List<MemoryRecord> = synchronized(lock) {
         index.search(query)
+    }
+
+    override suspend fun list(query: MemoryListQuery): List<MemoryRecord> = synchronized(lock) {
+        index.list(query)
     }
 
     override suspend fun replace(memory: ReplaceMemory): MemoryRecord = synchronized(lock) {
@@ -99,6 +105,14 @@ internal class MemoryIndex private constructor(
             .take(query.limit)
             .toList()
     }
+
+    fun list(query: MemoryListQuery): List<MemoryRecord> = entries.values.asSequence()
+        .filter { it.scope == query.scope }
+        .mapNotNull(MemoryEntry::record)
+        .filter { it.kind in query.kinds }
+        .sortedWith(compareByDescending<MemoryRecord> { it.updatedAt }.thenBy { it.id.value })
+        .take(query.limit)
+        .toList()
 
     fun replace(memory: ReplaceMemory, now: java.time.Instant): MemoryChange<MemoryRecord> {
         val stored = visibleMemory(memory.scope, memory.id)

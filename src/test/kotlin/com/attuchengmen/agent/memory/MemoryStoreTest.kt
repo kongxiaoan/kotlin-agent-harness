@@ -67,6 +67,21 @@ class MemoryStoreTest {
     }
 
     @Test
+    fun `list returns recent active memories only inside the requested scope`() = runBlocking {
+        val ids = ArrayDeque(listOf(MemoryId("memory-2"), MemoryId("memory-1"), MemoryId("memory-3")))
+        val store = InMemoryMemoryStore({ ids.removeFirst() }, FIXED_CLOCK)
+        store.create(NewMemory(SCOPE, MemoryKind.SEMANTIC, "first", listOf(SOURCE_1)))
+        store.create(NewMemory(SCOPE, MemoryKind.PROCEDURAL, "second", listOf(SOURCE_1)))
+        store.create(
+            NewMemory(SCOPE.copy(userId = UserId("other")), MemoryKind.SEMANTIC, "private", listOf(SOURCE_1)),
+        )
+
+        val result = store.list(MemoryListQuery(SCOPE, limit = 1))
+
+        assertEquals(listOf("second"), result.map(MemoryRecord::content))
+    }
+
+    @Test
     fun `replace requires the current version and preserves source lineage`() = runBlocking {
         val store = store()
         val created = store.create(NewMemory(SCOPE, MemoryKind.SEMANTIC, "Uses Java", listOf(SOURCE_1)))

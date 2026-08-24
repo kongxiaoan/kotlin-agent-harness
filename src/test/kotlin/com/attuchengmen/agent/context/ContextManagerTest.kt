@@ -2,12 +2,23 @@ package com.attuchengmen.agent.context
 
 import com.attuchengmen.agent.message.AssistantMessage
 import com.attuchengmen.agent.message.Message
+import com.attuchengmen.agent.message.SystemMessage
 import com.attuchengmen.agent.message.ToolCallMessage
 import com.attuchengmen.agent.message.ToolResultMessage
 import com.attuchengmen.agent.message.UserMessage
 import com.attuchengmen.agent.model.ModelRequest
 import com.attuchengmen.agent.model.ToolCall
 import com.attuchengmen.agent.model.ToolDefinition
+import com.attuchengmen.agent.memory.MemoryContextEntry
+import com.attuchengmen.agent.memory.MemoryContextFormatter
+import com.attuchengmen.agent.memory.MemoryId
+import com.attuchengmen.agent.memory.MemoryKind
+import com.attuchengmen.agent.memory.MemoryRecord
+import com.attuchengmen.agent.memory.MemoryScope
+import com.attuchengmen.agent.memory.MemorySource
+import com.attuchengmen.agent.identity.AgentId
+import com.attuchengmen.agent.identity.TenantId
+import com.attuchengmen.agent.identity.UserId
 import com.attuchengmen.agent.session.AssistantMessageAdded
 import com.attuchengmen.agent.session.SessionEvent
 import com.attuchengmen.agent.session.SessionEventEnvelope
@@ -28,6 +39,48 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
 class ContextManagerTest {
+    @Test
+    fun `injects selected memory before current turn and records its immutable snapshot`() {
+        val events = envelopes(TurnStarted(1), StepStarted(1, 1), UserMessageAdded("hello"))
+        val memory = memory("memory-1", "User prefers Kotlin")
+        val manager = ContextManager(
+            window = ContextWindow(contextWindowTokens = 500, maxOutputTokens = 20),
+            tokenEstimator = MessageLengthTokenEstimator,
+        )
+
+        val plan = manager.build(events, currentTurn = 1, tools = emptyList(), memories = listOf(memory))
+
+        val snapshot = MemoryContextEntry(memory.id, memory.kind, memory.content, memory.version)
+        assertEquals(listOf(snapshot), plan.selectedMemories)
+        assertEquals(
+            listOf(MemoryContextFormatter.toMessage(listOf(snapshot)), UserMessage("hello")),
+            plan.request.messages,
+        )
+    }
+
+    @Test
+    fun `memory that exceeds the remaining input budget is skipped`() {
+        val events = envelopes(TurnStarted(1), StepStarted(1, 1), UserMessageAdded("x"))
+        val manager = ContextManager(
+            window = ContextWindow(contextWindowTokens = 10, maxOutputTokens = 2),
+            tokenEstimator = object : InputTokenEstimator {
+                override val id = "memory-cost-v1"
+                override fun estimate(request: ModelRequest): Int =
+                    if (request.messages.any { it is SystemMessage }) 20 else 1
+            },
+        )
+
+        val plan = manager.build(
+            events,
+            currentTurn = 1,
+            tools = emptyList(),
+            memories = listOf(memory("memory-1", "too large")),
+        )
+
+        assertEquals(emptyList(), plan.selectedMemories)
+        assertEquals(listOf(UserMessage("x")), plan.request.messages)
+    }
+
     @Test
     fun `keeps the current turn and the newest complete turns within budget`() {
         val events = envelopes(
@@ -181,6 +234,17 @@ class ContextManagerTest {
         description = "Read a file.",
         parameters = buildJsonObject { put("type", "object") },
     )
+
+    private fun memory(id: String, content: String): MemoryRecord = MemoryRecord(
+        id = MemoryId(id),
+        scope = MemoryScope(TenantId("tenant-1"), UserId("user-1"), AgentId("agent-1")),
+        kind = MemoryKind.SEMANTIC,
+        content = content,
+        sources = listOf(MemorySource(SessionId("source-session"), SessionEventRange(1, 2))),
+        version = 1,
+        createdAt = Instant.parse("2026-08-24T08:00:00Z"),
+        updatedAt = Instant.parse("2026-08-24T08:00:00Z"),
+    )
 }
 
 private object MessageLengthTokenEstimator : InputTokenEstimator {
@@ -189,6 +253,7 @@ private object MessageLengthTokenEstimator : InputTokenEstimator {
     override fun estimate(request: ModelRequest): Int = request.messages.sumOf(::messageLength)
 
     private fun messageLength(message: Message): Int = when (message) {
+        is SystemMessage -> message.content.length
         is UserMessage -> message.content.length
         is AssistantMessage -> message.content.length
         is ToolCallMessage -> message.call.arguments.length + message.content.orEmpty().length
