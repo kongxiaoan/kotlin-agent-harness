@@ -16,7 +16,7 @@ class ToolRegistryTest {
         val registry = ToolRegistry(listOf(tool))
 
         val result = runBlocking {
-            registry.execute(ToolCall("call-1", "read_file", "{\"path\":\"README.md\"}"))
+            registry.execute(ToolCall("call-1", "read_file", "{\"path\":\"README.md\"}"), TEST_TOOL_CONTEXT)
         }
 
         assertEquals("content", result)
@@ -28,7 +28,7 @@ class ToolRegistryTest {
         val registry = ToolRegistry()
 
         val failure = assertFailsWith<UnknownToolException> {
-            runBlocking { registry.execute(ToolCall("call-1", "missing", "{}")) }
+            runBlocking { registry.execute(ToolCall("call-1", "missing", "{}"), TEST_TOOL_CONTEXT) }
         }
 
         assertEquals("unknown tool \"missing\"", failure.message)
@@ -66,7 +66,7 @@ private class StubTool(
     )
     val arguments = mutableListOf<String>()
 
-    override suspend fun execute(arguments: String): String {
+    override suspend fun execute(arguments: String, context: ToolExecutionContext): String {
         this.arguments.add(arguments)
         return result
     }

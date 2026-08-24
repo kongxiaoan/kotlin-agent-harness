@@ -35,9 +35,9 @@ class ToolRegistry(
     }
 
     /** 将原始参数交给名称匹配的工具。 */
-    suspend fun execute(call: ToolCall): String {
+    suspend fun execute(call: ToolCall, context: ToolExecutionContext): String {
         currentCoroutineContext().ensureActive()
-        val result = (toolsByName[call.name] ?: throw UnknownToolException(call.name)).execute(call.arguments)
+        val result = (toolsByName[call.name] ?: throw UnknownToolException(call.name)).execute(call.arguments, context)
         currentCoroutineContext().ensureActive()
         return result
     }

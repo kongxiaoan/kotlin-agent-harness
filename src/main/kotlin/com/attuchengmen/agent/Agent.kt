@@ -2,6 +2,7 @@ package com.attuchengmen.agent
 
 import com.attuchengmen.agent.message.AssistantMessage
 import com.attuchengmen.agent.context.ContextManager
+import com.attuchengmen.agent.identity.AgentIdentity
 import com.attuchengmen.agent.model.LanguageModel
 import com.attuchengmen.agent.model.ModelChunk
 import com.attuchengmen.agent.model.ModelChunkAssembler
@@ -16,6 +17,7 @@ import com.attuchengmen.agent.session.ModelRequestPrepared
 import com.attuchengmen.agent.session.ModelRetryScheduled
 import com.attuchengmen.agent.session.Session
 import com.attuchengmen.agent.session.SessionProjector
+import com.attuchengmen.agent.session.SessionEventRange
 import com.attuchengmen.agent.session.StepEnded
 import com.attuchengmen.agent.session.StepStarted
 import com.attuchengmen.agent.session.TurnEnded
@@ -25,6 +27,7 @@ import com.attuchengmen.agent.session.ToolCallRequested
 import com.attuchengmen.agent.session.ToolResultAdded
 import com.attuchengmen.agent.session.UserMessageAdded
 import com.attuchengmen.agent.tool.ToolRegistry
+import com.attuchengmen.agent.tool.ToolExecutionContext
 import com.attuchengmen.agent.tool.ToolException
 import com.attuchengmen.agent.tool.UnexpectedToolException
 import kotlinx.coroutines.CancellationException
@@ -77,6 +80,7 @@ class Agent(
     private val options: AgentOptions,
     private val clock: Clock = Clock.systemUTC(),
     private val contextManager: ContextManager? = null,
+    private val identity: AgentIdentity = AgentIdentity.isolated(session.id),
 ) {
     private val turnMutex = Mutex()
 
@@ -153,7 +157,7 @@ class Agent(
                 is ModelResponse.ToolRequest -> {
                     session.append(ToolCallRequested(turn, step, response.call, response.content))
                     try {
-                        val result = tools.execute(response.call)
+                        val result = tools.execute(response.call, toolExecutionContext(turn, step))
                         session.append(ToolResultAdded(turn, step, response.call.id, result, isError = false))
                     } catch (error: ToolException) {
                         session.append(
@@ -257,6 +261,24 @@ class Agent(
     /** 从事实日志推导递增编号，避免 Agent 持有另一份轮次状态。 */
     private fun nextTurnNumber(): Int =
         (session.events.filterIsInstance<TurnStarted>().maxOfOrNull { it.turn } ?: 0) + 1
+
+    /** 从已持久化的当前 Turn 事实生成不可由模型伪造的 Tool 上下文。 */
+    private fun toolExecutionContext(turn: Int, step: Int): ToolExecutionContext {
+        val envelopes = session.envelopes
+        val turnStarts = envelopes.filter { envelope ->
+            val event = envelope.event
+            event is TurnStarted && event.turn == turn
+        }
+        check(turnStarts.size == 1) { "expected exactly one start for turn $turn" }
+        val latest = checkNotNull(envelopes.lastOrNull()) { "tool execution requires session facts" }
+        return ToolExecutionContext(
+            identity = identity,
+            sessionId = session.id,
+            turn = turn,
+            step = step,
+            sourceEventRange = SessionEventRange(turnStarts.single().sequence, latest.sequence),
+        )
+    }
 }
 
 /** 一个 Step 对所属 Turn 的控制结果。 */

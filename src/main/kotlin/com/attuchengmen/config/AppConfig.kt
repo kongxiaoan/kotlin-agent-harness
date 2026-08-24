@@ -2,6 +2,10 @@ package com.attuchengmen.config
 
 import com.attuchengmen.agent.model.ModelPricing
 import com.attuchengmen.agent.model.ModelRetryPolicy
+import com.attuchengmen.agent.identity.AgentId
+import com.attuchengmen.agent.identity.AgentIdentity
+import com.attuchengmen.agent.identity.TenantId
+import com.attuchengmen.agent.identity.UserId
 import org.snakeyaml.engine.v2.api.Load
 import org.snakeyaml.engine.v2.api.LoadSettings
 import java.math.BigDecimal
@@ -12,9 +16,12 @@ import java.time.Duration
 
 /** 应用入口组装 Agent Runtime 所需的非敏感配置。 */
 data class AppConfig(
+    val identity: AgentIdentity,
     val model: ModelConfig,
     val agent: AgentConfig,
     val sessionPath: Path,
+    val memoryPath: Path,
+    val memoryWriteMaxChars: Int,
     val workspaceRoot: Path,
     val readFileMaxBytes: Int,
 )
@@ -63,7 +70,10 @@ object AppConfigLoader {
             throw AppConfigException("cannot load config $path", error)
         }
         val root = ConfigNode.mapping(document, "config")
-        root.requireOnly("model", "agent", "session", "workspace")
+        root.requireOnly("identity", "model", "agent", "session", "memory", "workspace")
+
+        val identity = root.child("identity")
+        identity.requireOnly("tenant-id", "user-id", "agent-id")
 
         val model = root.child("model")
         model.requireOnly(
@@ -93,6 +103,8 @@ object AppConfigLoader {
         retry.requireOnly("max-retries", "initial-delay-ms", "max-delay-ms")
         val session = root.child("session")
         session.requireOnly("path")
+        val memory = root.child("memory")
+        memory.requireOnly("path", "write-max-chars")
         val workspace = root.child("workspace")
         workspace.requireOnly("root", "read-file-max-bytes")
         val agent = root.child("agent")
@@ -101,6 +113,11 @@ object AppConfigLoader {
         val configDirectory = path.toAbsolutePath().normalize().parent
             ?: throw AppConfigException("config path must have a parent directory")
         return AppConfig(
+            identity = AgentIdentity(
+                tenantId = TenantId(identity.string("tenant-id")),
+                userId = UserId(identity.string("user-id")),
+                agentId = AgentId(identity.string("agent-id")),
+            ),
             model = ModelConfig(
                 provider = model.string("provider"),
                 apiKeyEnv = model.string("api-key-env"),
@@ -124,6 +141,8 @@ object AppConfigLoader {
                 turnTimeout = Duration.ofSeconds(agent.positiveLong("turn-timeout-seconds")),
             ),
             sessionPath = resolvePath(configDirectory, session.string("path")),
+            memoryPath = resolvePath(configDirectory, memory.string("path")),
+            memoryWriteMaxChars = memory.positiveInt("write-max-chars"),
             workspaceRoot = resolvePath(configDirectory, workspace.string("root")),
             readFileMaxBytes = workspace.positiveInt("read-file-max-bytes"),
         )

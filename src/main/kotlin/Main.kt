@@ -5,6 +5,8 @@ import com.attuchengmen.agent.context.ConservativeUtf8TokenEstimator
 import com.attuchengmen.agent.context.ContextManager
 import com.attuchengmen.agent.context.ContextWindow
 import com.attuchengmen.agent.model.LanguageModel
+import com.attuchengmen.agent.memory.JsonFileMemoryStore
+import com.attuchengmen.agent.memory.MemoryWriteTool
 import com.attuchengmen.agent.model.providers.DeepSeekAdapter
 import com.attuchengmen.agent.model.providers.DeepSeekConfig
 import com.attuchengmen.agent.runtime.AgentRuntimeService
@@ -29,8 +31,12 @@ suspend fun main(args: Array<String>) {
     require(task.isNotBlank()) { "task must not be blank" }
 
     val model = createModel(config)
+    val memoryStore = JsonFileMemoryStore(config.memoryPath)
     val tools = ToolRegistry(
-        listOf(ReadFileTool(config.workspaceRoot, config.readFileMaxBytes)),
+        listOf(
+            ReadFileTool(config.workspaceRoot, config.readFileMaxBytes),
+            MemoryWriteTool(memoryStore, config.memoryWriteMaxChars),
+        ),
     )
     val sessionLog = JsonlFileSessionLog(config.sessionPath)
     val runtime = AgentRuntimeService(
@@ -55,6 +61,7 @@ suspend fun main(args: Array<String>) {
                     ),
                     ConservativeUtf8TokenEstimator,
                 ),
+                identity = config.identity,
             )
         },
     )

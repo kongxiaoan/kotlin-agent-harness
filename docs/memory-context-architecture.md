@@ -4,7 +4,7 @@
 
 本文定义 Kotlin Agent Runtime 的长期记忆与上下文管理架构，并区分当前实现与后续目标。
 
-当前项目已经完成 Context Management V1：每次模型调用保留当前 Turn，并在输入预算内从近到远选择连续的完整历史 Turn；`ContextPrepared` 记录选择区间、预算和估算器版本，历史请求可以重建。身份作用域、长期 Memory、精确 Provider Tokenizer 和 Compaction 尚未实现。
+当前项目已经完成 Context Management V1、Memory Store 领域基础、原子 JSON 快照和安全的 LLM 写入工具：长期记忆使用 tenant/user/agent 强制 Scope、Session 来源、版本化替换和遗忘墓碑；`memory_write` 只接收候选内容和类型，身份与来源由 Runtime 注入。CLI 已激活持久化写入，Memory 尚未接入 Context。
 
 ## 一句话模型
 
@@ -94,9 +94,11 @@ MemoryStore ───────┘                                     │
 
 ### Extract
 
-从完整 Turn、用户显式命令或外部可信数据中产生 `MemoryCandidate`。Extractor 只提出候选，不直接覆盖已有记忆。
+从当前对话、完整 Turn 或外部可信数据中产生 `MemoryCandidate`。Extractor 只提出候选，不直接覆盖已有记忆。
 
-第一版应优先支持用户明确要求的 `remember` 行为。自动 LLM 提取会引入成本、误提取和提示注入风险，应在基础语义与评估体系建立后增加。
+产品主链路不要求用户说出“记住”之类的技术命令。正常对话中的主 LLM 根据 Memory Policy 判断信息是否稳定且对未来有价值，并调用模型可见的 `memory_write` 工具提交候选；用户明确要求记忆只是同一链路的特殊输入，不是独立功能。
+
+第一版复用正在执行 Agent Loop 的主 LLM，不额外发起一次后台提取请求。LLM 只提供候选内容和类型；`MemoryScope`、Session 来源和事件区间由 Runtime 注入，不能由模型参数指定。Consolidator 随后决定 create、replace 或 ignore，避免模型直接覆盖 Store。独立的 Turn 后置 Extractor 可以提高召回率，但会增加调用成本、延迟和重复写入，应在主链路可评估后再增加。
 
 ### Consolidate
 
@@ -134,6 +136,20 @@ forget(expectedVersion)
 ```
 
 更新和遗忘使用乐观并发版本，避免两个写入者静默覆盖对方。
+
+### 当前 Memory Store V1
+
+当前实现刻意停在存储语义层：
+
+```text
+MemoryScope = TenantId + UserId + AgentId
+MemoryRecord = ID + Scope + Kind + Content + Sources + Version + Timestamps
+MemorySource = SessionId + SessionEventRange
+```
+
+`InMemoryMemoryStore` 支持 create、get、文本 search、replace 和 forget。所有读取和写入都要求完整 Scope；Scope 不匹配与不存在使用相同结果，避免泄漏其他用户是否拥有某个 Memory ID。replace 和 forget 必须提交 `expectedVersion`，过期写入明确冲突。forget 删除可检索正文，只保留内部版本墓碑，旧版本不能恢复已遗忘内容。
+
+`JsonFileMemoryStore` 使用原子文件替换保存当前索引，重启后恢复 active 记录和遗忘墓碑。它不采用追加日志，因为 replace 和 forget 必须从磁盘移除旧正文；完整 Memory Event Sourcing 与隐私删除需要另行设计。该实现不协调多进程写入，只适合当前单进程 CLI。当前文本 search 也只是确定性基础，不代表最终检索质量；Memory 尚未进入 `ContextPlan`。
 
 ## Memory 的事实归属
 
@@ -234,7 +250,7 @@ Memory 系统不能只验证“数据库返回了结果”。至少需要评估�
 | `Agent.generateWithRetry` | 每个 Attempt 前重新构建 Context | 保持调用级重建语义 |
 | `TokenUsage` | Provider 返回的事后精确计量 | 与调用前保守估算分别保留 |
 
-当前只有确定性的 Session Context V1；`MemoryStore`、Extractor、Consolidator 和 Compactor 仍是目标职责，不应一次性全部创建。
+当前已实现确定性的 Session Context V1、内存与本地持久化 `MemoryStore`，以及已激活的 LLM 写入工具；Consolidator、Memory Context 注入、数据库实现与 Compactor 仍是后续职责，不应一次性全部创建。
 
 ## 推荐实施顺序
 
@@ -242,17 +258,17 @@ Memory 系统不能只验证“数据库返回了结果”。至少需要评估�
 
 已完成：定义 Window、输出预留与安全余量，从 SessionEvent 识别完整 Turn，在 Token Budget 内选择历史，并记录可重建的选择结果。第一阶段不实现长期 Memory 和自动摘要。
 
-### 2. Memory Scope 与显式记忆
+### 2. Memory Scope 与 LLM 写入
 
-引入用户和 Agent 作用域，定义 `MemoryRecord` 与 `MemoryStore`，实现内存版本的 remember、search、replace、forget，并验证跨 Session 读取和跨用户隔离。第一版不需要向量数据库。
+Store、安全写入链和 CLI 本地持久化已完成：主 LLM 可以自主调用 `memory_write`，Scope 和来源不能来自模型参数，落盘失败不会产生成功结果。第一版不额外调用提取模型，也不需要向量数据库。
 
 ### 3. Memory 接入 Context
 
-Memory Retrieval 产生 `ContextCandidate`，与历史 Turn 一起参与 Token Budget，并记录实际使用的 Memory ID、版本和内容快照。
+下一切片：Memory Retrieval 产生 `ContextCandidate`，与历史 Turn 一起参与 Token Budget，并记录实际使用的 Memory ID、版本和内容快照。
 
-### 4. 自动提取与 Compaction
+### 4. 后置提取与 Compaction
 
-在评估样例保护下增加后台 Extractor、Consolidator、Session Summary、混合检索和持久化索引。自动生成失败不应阻塞主要 Agent Turn。
+在评估样例保护下增加独立的 Turn 后置 Extractor、Session Summary、混合检索和持久化索引。后置生成失败不应阻塞主要 Agent Turn。
 
 PostgreSQL `SessionEventStore` 属于服务可靠性路线，可以与 Context V1 独立推进；生产级跨 Session Memory 则同时依赖身份体系和持久化存储。
 

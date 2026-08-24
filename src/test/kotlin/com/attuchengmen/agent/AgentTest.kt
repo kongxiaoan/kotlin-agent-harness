@@ -34,6 +34,7 @@ import com.attuchengmen.agent.session.ToolCallRequested
 import com.attuchengmen.agent.session.ToolResultAdded
 import com.attuchengmen.agent.session.UserMessageAdded
 import com.attuchengmen.agent.tool.Tool
+import com.attuchengmen.agent.tool.ToolExecutionContext
 import com.attuchengmen.agent.tool.ToolRegistry
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
@@ -456,6 +457,11 @@ class AgentTest {
 
         assertEquals(AssistantMessage("the project is a Kotlin agent runtime"), reply)
         assertEquals(listOf(call.arguments), tool.arguments)
+        assertEquals(session.id, tool.contexts.single().sessionId)
+        assertEquals(1, tool.contexts.single().turn)
+        assertEquals(1, tool.contexts.single().step)
+        assertEquals(1L, tool.contexts.single().sourceEventRange.fromSequence)
+        assertEquals(6L, tool.contexts.single().sourceEventRange.toSequence)
         assertEquals(
             listOf(
                 listOf(UserMessage("read the readme")),
@@ -546,7 +552,8 @@ class AgentTest {
                 parameters = buildJsonObject { put("type", "object") },
             )
 
-            override suspend fun execute(arguments: String): String = error("database password leaked")
+            override suspend fun execute(arguments: String, context: ToolExecutionContext): String =
+                error("database password leaked")
         }
         val agent = Agent(session, model, ToolRegistry(listOf(tool)), TEST_OPTIONS)
 
@@ -617,9 +624,11 @@ private class RecordingTool(
         parameters = buildJsonObject { put("type", "object") },
     )
     val arguments = mutableListOf<String>()
+    val contexts = mutableListOf<ToolExecutionContext>()
 
-    override suspend fun execute(arguments: String): String {
+    override suspend fun execute(arguments: String, context: ToolExecutionContext): String {
         this.arguments.add(arguments)
+        contexts.add(context)
         return result
     }
 }

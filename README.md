@@ -21,6 +21,7 @@
 - Runtime 记录并组装 `ModelChunk` 流；非流式 Provider 通过兼容实现产生一个终态 chunk。
 - `DeepSeekAdapter` 支持文本和单个工具调用的 SSE 增量组装，并在流长期无数据时中止和重试。
 - Provider Usage、模型身份和价格快照持久化到 Session；支持精确成本、缓存率和重试浪费统计。
+- 提供强制 tenant/user/agent Scope、来源追踪、版本冲突和遗忘语义的 MemoryStore；CLI 使用原子 JSON 快照持久化，并向主 LLM 注册由 Runtime 注入身份与来源的 `memory_write`。
 - Session 在持久化后发布实时事件，终端按 attempt 增量显示模型文本、标记失败重试且不重复最终答案。
 - `AgentRuntimeService` 在单进程内管理多个 Session 和异步 Run；同一 Session 拒绝并发 Run，不同 Session 可以并行。
 - 提供限制在工作区内、带大小上限的 `read_file` 工具。
@@ -29,6 +30,8 @@
 ## 运行真实流程
 
 模型、超时、Turn Step 上限、Session 和工作区配置位于 `config.yaml`。文件只保存环境变量名，不保存 API Key。
+
+Memory 快照路径也由 `config.yaml` 配置。`memory_write` 只有在新快照原子替换成功后才向模型返回成功；当前 Memory 尚未进入模型 Context，读取链路将在下一阶段接入。
 
 ```bash
 read -s DEEPSEEK_API_KEY

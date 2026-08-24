@@ -17,6 +17,9 @@ class AppConfigLoaderTest {
 
             val config = AppConfigLoader.load(path)
 
+            assertEquals("tenant-1", config.identity.tenantId.value)
+            assertEquals("user-1", config.identity.userId.value)
+            assertEquals("agent-1", config.identity.agentId.value)
             assertEquals("deepseek", config.model.provider)
             assertEquals("DEEPSEEK_API_KEY", config.model.apiKeyEnv)
             assertEquals("deepseek-v4-flash", config.model.model)
@@ -29,6 +32,8 @@ class AppConfigLoaderTest {
             assertEquals(0, config.model.pricing.cacheReadPerMillion.compareTo("0.02".toBigDecimal()))
             assertEquals(2, config.model.retryPolicy.maxRetries)
             assertEquals(root.resolve("data/session.jsonl"), config.sessionPath)
+            assertEquals(root.resolve("data/memory.json"), config.memoryPath)
+            assertEquals(4096, config.memoryWriteMaxChars)
             assertEquals(root, config.workspaceRoot)
             assertEquals(1_048_576, config.readFileMaxBytes)
             assertEquals(8, config.agent.maxStepsPerTurn)
@@ -57,6 +62,10 @@ class AppConfigLoaderTest {
 
     private companion object {
         private val validConfig = """
+            identity:
+              tenant-id: tenant-1
+              user-id: user-1
+              agent-id: agent-1
             model:
               provider: deepseek
               api-key-env: DEEPSEEK_API_KEY
@@ -81,6 +90,9 @@ class AppConfigLoaderTest {
                 max-delay-ms: 4000
             session:
               path: data/session.jsonl
+            memory:
+              path: data/memory.json
+              write-max-chars: 4096
             workspace:
               root: .
               read-file-max-bytes: 1048576

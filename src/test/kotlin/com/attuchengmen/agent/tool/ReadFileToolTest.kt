@@ -27,7 +27,7 @@ class ReadFileToolTest {
         workspace.resolve("README.md").writeText("Kotlin Agent Runtime")
         val tool = ReadFileTool(workspace, maxBytes = 1024)
 
-        val result = runBlocking { tool.execute("{\"path\":\"README.md\"}") }
+        val result = runBlocking { tool.execute("{\"path\":\"README.md\"}", TEST_TOOL_CONTEXT) }
 
         assertEquals("Kotlin Agent Runtime", result)
     }
@@ -44,7 +44,7 @@ class ReadFileToolTest {
             "{\"path\":\"README.md\",\"extra\":true}",
         )) {
             assertFailsWith<ToolArgumentsException> {
-                runBlocking { tool.execute(arguments) }
+                runBlocking { tool.execute(arguments, TEST_TOOL_CONTEXT) }
             }
         }
     }
@@ -58,7 +58,7 @@ class ReadFileToolTest {
             val tool = ReadFileTool(workspace, maxBytes = 1024)
 
             assertFailsWith<ToolArgumentsException> {
-                runBlocking { tool.execute("{\"path\":\"../secret.txt\"}") }
+                runBlocking { tool.execute("{\"path\":\"../secret.txt\"}", TEST_TOOL_CONTEXT) }
             }
         } finally {
             root.toFile().deleteRecursively()
@@ -71,7 +71,7 @@ class ReadFileToolTest {
         val tool = ReadFileTool(workspace, maxBytes = 4)
 
         val failure = assertFailsWith<ToolExecutionException> {
-            runBlocking { tool.execute("{\"path\":\"large.txt\"}") }
+            runBlocking { tool.execute("{\"path\":\"large.txt\"}", TEST_TOOL_CONTEXT) }
         }
 
         assertEquals("tool \"read_file\" failed: file exceeds 4 byte limit", failure.message)

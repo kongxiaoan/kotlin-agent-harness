@@ -1,3 +1,9 @@
+identity:
+# CLI 本地身份；HTTP 服务必须由认证结果提供，不能信任请求正文
+  tenant-id: local-tenant
+  user-id: local-user
+  agent-id: kotlin-agent
+
 model:
   provider: deepseek
   api-key-env: DEEPSEEK_API_KEY
@@ -32,6 +38,10 @@ agent:
 
 session:
   path: .runtime/session.jsonl
+
+memory:
+  path: .runtime/memory.json
+  write-max-chars: 4096
 
 workspace:
   root: .
